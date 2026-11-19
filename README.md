@@ -3,18 +3,18 @@
   <h1>OC Setup Easy</h1>
   <p>Mount your EFI, compare installed kexts with <code>Kernel → Add</code>, and edit OpenCore on your Hackintosh.</p>
   <p><b>Rust</b> · Native macOS WebKit · Italian and English · Works offline</p>
-  <p><a href="https://github.com/Skensy/OC-Setup-Easy/releases/latest"><b>Download for macOS (x86-64)</b></a></p>
+  <p><a href="https://github.com/Skensy/OC-Setup-Easy/releases/latest"><b>Download for macOS (Universal)</b></a></p>
 </div>
 
 ![OC Setup Easy dashboard showing sample system and boot information](assets/panoramica.png)
 
 ## Install
 
-Download the app ZIP from [GitHub Releases](https://github.com/Skensy/OC-Setup-Easy/releases/latest), unzip it, and drag **OC Setup Easy.app** into **Applications**. The published build is ad-hoc signed and has no Apple notarization. It targets macOS 11 or later and has been tested on an x86-64 AMD Hackintosh running macOS 26.7.1.
+Download the Universal app ZIP for Intel and Apple Silicon from [GitHub Releases](https://github.com/Skensy/OC-Setup-Easy/releases/latest), unzip it, and drag **OC Setup Easy.app** into **Applications**. The published build is ad-hoc signed and has no Apple notarization. It targets macOS 11 or later and has been tested on an x86-64 AMD Hackintosh running macOS 26.7.1.
 
 ## Edit your first configuration
 
-The 0.2 source build supports English and Italian. Use the language selector at the bottom of the sidebar to switch without closing your draft. The app remembers your choice. The published 0.1.0 build uses the Italian labels shown below.
+OC Setup Easy 0.2.0 supports English and Italian. Use the language selector at the bottom of the sidebar to switch without closing your draft. The app remembers your choice. The steps below use the Italian button labels.
 
 1. Open **Volumi EFI** (EFI volumes). Identify your disk by its model, connection, and device identifier. Click **Monta** to mount it, then **Apri EFI** to open it. To work on a copy, use **Apri cartella EFI** and select the volume, the EFI folder, or the OC folder containing `config.plist`.
 2. Open **Verifica e backup** (validation and backup) and create a ZIP before making changes. When OC sits inside EFI, the archive includes the entire EFI folder. Opening a standalone OC folder backs up that folder.
