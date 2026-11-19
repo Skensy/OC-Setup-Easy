@@ -22,6 +22,7 @@ function translatedError(message) {
 function languageUI(lang) {
   language = lang === "en" ? "en" : "it";
   document.documentElement.lang = language;
+  document.querySelector(".brand small").textContent = t("Utilità OpenCore");
   document.querySelector("#language").value = language;
   document
     .querySelector("#language")

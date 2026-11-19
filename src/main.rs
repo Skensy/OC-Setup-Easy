@@ -1,6 +1,10 @@
+mod acpi;
 mod cli;
 mod devices;
 mod diagnostics;
+#[cfg(test)]
+#[path = "../tests/macos/efi_image.rs"]
+mod efi_image;
 mod graph;
 mod history;
 mod kext_update;
@@ -9,6 +13,7 @@ mod plist_tools;
 mod schema;
 mod system;
 mod usb;
+mod validator;
 mod workspace;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -41,6 +46,7 @@ fn dispatch(req: &Value) -> Result<Value> {
         "report" => system::cached_report(field("category")?, req["refresh"] == true),
         "mount" | "unmount" => {
             let id = field("id")?;
+            ensure!(system::disk_id(id), "Partizione EFI non disponibile");
             if field("op")? == "unmount" {
                 let disks = system::disks()?;
                 if let Some(point) = disks
@@ -67,6 +73,7 @@ fn dispatch(req: &Value) -> Result<Value> {
         }
         "finish" => {
             let id = field("id")?;
+            ensure!(system::disk_id(id), "Partizione EFI non disponibile");
             let uuid = field("uuid")?;
             let w = session
                 .as_ref()
@@ -96,6 +103,7 @@ fn dispatch(req: &Value) -> Result<Value> {
                             && d["ejectable"] == true
                     })
                 })
+                && system::whole_disk(parent)
                 && let Err(e) = system::output("/usr/sbin/diskutil", &["eject", parent])
             {
                 warning = Some(e.to_string());
@@ -111,6 +119,8 @@ fn dispatch(req: &Value) -> Result<Value> {
                 .as_mut()
                 .context("Apri prima una cartella OpenCore.")?;
             match op {
+                "compile" => acpi::compile(w, Path::new(field("path")?)),
+                "live" => diagnostics::live(w),
                 "convert" => devices::convert(field("kind")?, field("value")?),
                 "usbPreview" => {
                     w.usb_fix = None;
@@ -124,7 +134,22 @@ fn dispatch(req: &Value) -> Result<Value> {
                         .context("Ricontrolla la mappa USB")?
                         .apply(w, &workspace::backups()?)?
                 )),
-                "checkpoint" => Ok(w.history.record(field("xml")?)),
+                "xmlEdit" => {
+                    if let Some(previous) = req["previous"].as_str() {
+                        w.history.snapshot(previous);
+                    }
+                    let offset = req["offset"].as_u64().context("Posizione XML non valida")?;
+                    w.history
+                        .splice(usize::try_from(offset)?, field("old")?, field("next")?)
+                }
+                "checkpoint" => {
+                    if let Some(prev) = req["previous"].as_str() {
+                        w.history.snapshot(prev);
+                    }
+                    ensure!(w.history.has_snapshot(), "Snapshot mancante");
+                    Ok(w.history.record(field("xml")?))
+                }
+                "patch" => Ok(w.history.patch(&req["path"], &req["old"], &req["next"])),
                 "undo" | "redo" => Ok(w.history.step(op == "redo")),
                 "diskChanged" => Ok(json!(w.assert_unchanged().is_err())),
                 "checkKexts" => kext_update::check(w),
@@ -157,7 +182,7 @@ fn dispatch(req: &Value) -> Result<Value> {
                 "save" => Ok(json!(w.save(field("xml")?)?)),
                 "validate" => {
                     let text = field("xml")?;
-                    let mut result = workspace::validate(text)?;
+                    let mut result = workspace::validate(text, &w.root)?;
                     result["issues"] =
                         json!(if plist::Value::from_reader_xml(text.as_bytes()).is_ok() {
                             diagnostics::lint(text, &w.inventory()?, &system::overview())?

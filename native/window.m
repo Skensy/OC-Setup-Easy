@@ -140,7 +140,22 @@ static void fileEvents(ConstFSEventStreamRef stream, void *context,
       item.tag = i;
     }
   }
+  NSMenuItem *view = [menu addItemWithTitle:[self it:@"Vista" en:@"View"] action:nil keyEquivalent:@""];
+  view.submenu = [[NSMenu alloc] initWithTitle:view.title];
+  NSArray *views = @[[self it:@"Panoramica" en:@"Overview"], [self it:@"Volumi EFI" en:@"EFI volumes"],
+    [self it:@"Editor plist" en:@"Plist editor"], [self it:@"Kext e componenti" en:@"Kexts and components"],
+    [self it:@"Verifica e backup" en:@"Validation and backups"], [self it:@"Hardware e sistema" en:@"Hardware and system"],
+    [self it:@"Cerca" en:@"Find"], [self it:@"Monta o smonta EFI" en:@"Mount or unmount EFI"]];
+  NSArray *shortcuts = @[@"1",@"2",@"3",@"4",@"5",@"6",@"f",@"e"];
+  for (NSUInteger i = 0; i < views.count; ++i) {
+    NSMenuItem *item = [view.submenu addItemWithTitle:views[i] action:@selector(viewShortcut:) keyEquivalent:shortcuts[i]];
+    item.target = self;
+  }
   NSApp.mainMenu = menu;
+}
+- (void)viewShortcut:(NSMenuItem *)item {
+  [self.view callAsyncJavaScript:@"window.ocShortcut(key)" arguments:@{@"key":item.keyEquivalent}
+    inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:nil];
 }
 - (void)editHistory:(NSMenuItem *)item {
   [self.view
@@ -190,7 +205,17 @@ static void fileEvents(ConstFSEventStreamRef stream, void *context,
                     defer:NO];
   self.window.title = @"OC Setup Easy";
   self.window.minSize = NSMakeSize(800, 540);
-  self.window.contentView = self.view;
+  NSVisualEffectView *material = [[NSVisualEffectView alloc] initWithFrame:self.window.contentView.bounds];
+  material.material = NSVisualEffectMaterialSidebar;
+  material.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+  material.state = NSVisualEffectStateFollowsWindowActiveState;
+  [self.view setValue:@NO forKey:@"drawsBackground"];
+  self.view.frame = material.bounds;
+  self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [material addSubview:self.view];
+  self.window.contentView = material;
+  self.window.toolbarStyle = NSWindowToolbarStyleUnified;
+  self.window.titlebarAppearsTransparent = YES;
   self.window.delegate = self;
   self.window.releasedWhenClosed = NO;
   [self.window center];
@@ -330,6 +355,14 @@ static void fileEvents(ConstFSEventStreamRef stream, void *context,
       reply(@{@"cancelled" : @YES}, nil);
       return;
     }
+    req[@"path"] = panel.URL.path;
+  }
+  if ([op isEqual:@"compile"]) {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.title = [self it:@"Compila sorgente ACPI" en:@"Compile ACPI source"];
+    panel.allowedContentTypes = @[[UTType typeWithFilenameExtension:@"dsl"]];
+    panel.canChooseDirectories = NO;
+    if ([panel runModal] != NSModalResponseOK) { reply(@{@"cancelled":@YES}, nil); return; }
     req[@"path"] = panel.URL.path;
   }
   if ([op isEqual:@"export"]) {

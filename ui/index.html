@@ -13,15 +13,15 @@
     <script defer src="language.js"></script>
     <script defer src="tools.js"></script>
     <script defer src="devices.js"></script>
+    <script defer src="navigation.js"></script>
+    <script defer src="inspection.js"></script>
     <script defer src="app.js"></script>
   </head>
   <body>
     <aside>
       <div class="brand">
         <span class="mark" data-icon="layers"></span>
-        <div>
-          <strong>OC Setup Easy</strong><small>OpenCore Workbench</small>
-        </div>
+        <div><strong>OC Setup Easy</strong><small>Utilità OpenCore</small></div>
       </div>
       <nav id="nav" aria-label="Navigazione principale"></nav>
       <div class="sidefoot">
@@ -31,13 +31,16 @@
         </select>
       </div>
       <div class="sidefoot session">
-        <span class="led"></span> <span id="local-label">Sessione locale</span>
-        <small>v0.3</small>
+        <i data-icon="shield"></i> <span id="local-label">Sessione locale</span>
+        <small>v0.4.0</small>
       </div>
     </aside>
     <main>
       <header>
-        <span id="crumb"></span><span id="active-volume" class="paths"></span
+        <span id="crumb"></span
+        ><label id="findbar" hidden
+          ><i data-icon="search"></i><input id="find" type="search" /></label
+        ><span id="active-volume" class="paths"></span
         ><button id="open" class="primary">
           <i data-icon="folder"></i
           ><span id="open-label">Apri cartella EFI</span>

@@ -37,7 +37,8 @@ function bootControls(node, input) {
     const source = node.textContent;
     for (const m of source.matchAll(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)) {
       const button = document.createElement("button");
-      button.textContent = m[0] + " ×";
+      button.textContent = m[0];
+      button.insertAdjacentHTML("beforeend", icon("close"));
       button.title = describe(m[0]);
       button.setAttribute("aria-label", t("Rimuovi") + " " + m[0]);
       button.onclick = () =>
@@ -93,8 +94,9 @@ function quickBoot() {
   const input = document.createElement("input");
   input.value = node.textContent;
   input.oninput = () => {
+    const old = [node.tagName, node.textContent];
     node.textContent = input.value;
-    sync();
+    scalarPatch(bootPath, old, node);
   };
   label.append(input);
   $("#content").append(label, bootControls(node, input));

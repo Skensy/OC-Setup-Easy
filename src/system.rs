@@ -151,6 +151,15 @@ pub fn disks() -> Result<Value> {
                     .get("DeviceIdentifier")
                     .and_then(P::as_string)
                     .unwrap_or("");
+                if !disk_id(val("DeviceIdentifier")) || !whole_disk(parent) {
+                    continue;
+                }
+                if !val("DeviceIdentifier")
+                    .strip_prefix(parent)
+                    .is_some_and(|s| s.starts_with('s'))
+                {
+                    continue;
+                }
                 let info = output("/usr/sbin/diskutil", &["info", "-plist", parent])
                     .ok()
                     .and_then(|b| P::from_reader(Cursor::new(b)).ok());
@@ -185,7 +194,11 @@ fn only_external_media_can_eject() {
     }
     assert!(!can_eject(&P::Dictionary(Default::default())));
 }
-fn disk_id(id: &str) -> bool {
+pub fn whole_disk(id: &str) -> bool {
+    id.strip_prefix("disk")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+pub fn disk_id(id: &str) -> bool {
     id.strip_prefix("disk")
         .and_then(|s| s.split_once('s'))
         .is_some_and(|(a, b)| {
@@ -205,7 +218,7 @@ pub fn mount(id: &str, uuid: &str, mount: bool) -> Result<Value> {
     );
     let op = if mount { "mount" } else { "unmount" };
     if output("/usr/sbin/diskutil", &[op, id]).is_err() {
-        output(
+        let elevated = output(
             "/usr/bin/osascript",
             &[
                 "-e",
@@ -213,13 +226,22 @@ pub fn mount(id: &str, uuid: &str, mount: bool) -> Result<Value> {
                     "do shell script \"/usr/sbin/diskutil {op} {id}\" with administrator privileges"
                 ),
             ],
-        )?;
+        );
+        if let Err(error) = elevated {
+            if error.to_string().contains("(-128)") {
+                bail!("Autorizzazione annullata")
+            }
+            return Err(error);
+        }
     }
     disks()
 }
 #[test]
 fn partition_identifiers() {
     assert!(disk_id("disk12s3"));
+    assert!(whole_disk("disk12"));
+    assert!(!whole_disk("disk12s3"));
+    assert!(!whole_disk("disk"));
     for s in ["disk0", "disk0s", "disk0s1;", "diskas1", "disk0s1s2"] {
         assert!(!disk_id(s));
     }

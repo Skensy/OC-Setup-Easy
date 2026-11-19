@@ -1,0 +1,15 @@
+OC Setup Easy 0.4.0
+
+Italiano
+Trascina OC Setup Easy in Applicazioni, poi aprila dal Finder.
+La build è firmata ad hoc. Se macOS blocca l’avvio, verifica la provenienza
+e il checksum della release. In Impostazioni di Sistema > Privacy e sicurezza
+scegli Apri comunque per questa app. Su macOS 11 la voce si trova in
+Preferenze di Sistema > Sicurezza e Privacy > Generali.
+
+English
+Drag OC Setup Easy to Applications, then open it from Finder.
+This build is ad-hoc signed. If macOS blocks opening it, verify the release
+source and checksum. In System Settings > Privacy & Security choose Open Anyway
+for this app. On macOS 11 look in System Preferences > Security & Privacy >
+General.

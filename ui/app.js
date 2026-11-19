@@ -9,6 +9,23 @@ const esc = (value) =>
       ],
   );
 const icons = {
+  undo: "M9 4L3 10l6 6 M4 10h9a7 7 0 0 1 7 7v3",
+  redo: "M15 4l6 6-6 6m5-6h-9a7 7 0 0 0-7 7v3",
+  diff: "M3 3h7v18H3z M14 3h7v18h-7z M5 8h3m8 6h3",
+  sliders: "M5 3v4m0 4v10m7-18v10m0 4v4m7-18v2m0 4v12 M2 9h6m1 6h6m1-8h6",
+  sort: "M4 6h16M4 12h11M4 18h6",
+  eject: "M3 15l9-11 9 11zM3 19h18",
+  download: "M12 3v12m-5-5 5 5 5-5M3 16v5h18v-5",
+  export: "M12 15V2m-5 5 5-5 5 5M7 9H3v12h18V9h-4",
+  search: "M16 16l5 5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
+  up: "M5 14l7-7 7 7",
+  down: "M5 10l7 7 7-7",
+  usb: "M9 3h6v5H9z M7 8h10v11l-3 3h-4l-3-3z",
+  external: "M4 5h16v14H4z M7 15h6m3 0h1",
+  acpi: "M5 2h10l4 4v16H5z M9 11h6m-6 4h6",
+  driver: "M4 6h16v11H4z M8 17v3m4-3v3m4-3v3 M8 10h8",
+  warn: "M12 3l10 17H2z M12 9v4m0 3v1",
+  close: "M6 6l12 12M6 18L18 6",
   layers: "M3 8l9-5 9 5-9 5z M3 12l9 5 9-5 M3 16l9 5 9-5",
   home: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   disk: "M5 5h14l3 11v3H2v-3z M3 15h18 M6 17h1",
@@ -27,7 +44,7 @@ const icons = {
 };
 function icon(key) {
   return (
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="' +
     icons[key] +
     '"/></svg>'
   );
@@ -48,7 +65,19 @@ const st = {
   system: {},
   disks: [],
   w: null,
-  xml: "",
+  source: "",
+  treeEdited: false,
+  get xml() {
+    if (this.treeEdited) {
+      this.source = new XMLSerializer().serializeToString(this.doc);
+      this.treeEdited = false;
+    }
+    return this.source;
+  },
+  set xml(text) {
+    this.source = text;
+    this.treeEdited = false;
+  },
   original: "",
   doc: null,
   dirty: false,
@@ -68,7 +97,27 @@ const groups = {
   Drivers: ["UEFI", "Drivers", "Path"],
   Tools: ["Misc", "Tools", "Path"],
 };
-const btn = (name, action, cls = "", glyph = "") =>
+const toolbarIcons = {
+  undo: "undo",
+  redo: "redo",
+  diff: "diff",
+  fields: "sliders",
+  xml: "code",
+  snapshot: "reload",
+  sort: "sort",
+  finder: "folder",
+  backups: "folder",
+  backup: "box",
+  finish: "eject",
+  checkKexts: "chip",
+  checkUpdate: "download",
+  sampleFile: "diff",
+  sampleRelease: "diff",
+  export: "export",
+  logs: "terminal",
+  close: "close",
+};
+const btn = (name, action, cls = "", glyph = toolbarIcons[action]) =>
   '<button type="button" data-act="' +
   action +
   '" class="' +
@@ -78,7 +127,12 @@ const btn = (name, action, cls = "", glyph = "") =>
   esc(name) +
   "</button>";
 const tag = (name, warn = false) =>
-  '<span class="tag' + (warn ? " warn" : "") + '">' + esc(name) + "</span>";
+  '<span class="tag' +
+  (warn ? " warn" : "") +
+  '">' +
+  icon(warn ? "warn" : "check") +
+  esc(name) +
+  "</span>";
 const pairs = (entries) =>
   "<dl>" +
   entries
@@ -120,6 +174,7 @@ async function work(fn) {
   document.body.classList.add("wait");
   $("#busy").hidden = false;
   try {
+    st.beforeAction = st.patched ? st.xml : undefined;
     await fn();
   } catch (e) {
     notice(e.message || String(e), true);
@@ -134,7 +189,9 @@ async function work(fn) {
     } catch (e) {
       notice(e.message, true);
     }
-    await bridge("editingTask", { value: false });
+    await bridge("editingTask", { value: false }).catch((e) =>
+      notice(e.message, true),
+    );
     st.busy = false;
     $("main").inert = false;
     $("aside").inert = false;
@@ -148,9 +205,13 @@ function historyButtons() {
     if (b) b.disabled = !st.history[op];
   }
 }
-function checkpoint() {
+function checkpoint(
+  op = "checkpoint",
+  data = { xml: st.xml, previous: st.beforeAction },
+) {
   const w = st.w;
-  rpc("checkpoint", { xml: st.xml })
+  st.patched = op === "patch";
+  rpc(op, data)
     .then((h) => {
       if (w === st.w) {
         st.history = h;
@@ -158,7 +219,7 @@ function checkpoint() {
       }
     })
     .catch((e) => notice(e.message, true));
-  dirty();
+  dirty(op === "patch" ? true : undefined);
 }
 function watchBanner() {
   const el = $("#watched");
@@ -212,8 +273,7 @@ async function loadReport(category, refresh = false) {
     pendingReports.delete(category);
   }
 }
-function dirty() {
-  const value = st.xml !== st.original;
+function dirty(value = st.xml !== st.original) {
   if (value !== st.dirty) {
     st.dirty = value;
     bridge("dirty", { value }).catch((e) => notice(e.message, true));
@@ -264,6 +324,10 @@ function sync() {
   st.xml = new XMLSerializer().serializeToString(st.doc);
   checkpoint();
 }
+function scalarPatch(path, old, node) {
+  st.treeEdited = true;
+  checkpoint("patch", { path, old, next: [node.tagName, node.textContent] });
+}
 function typed(doc, value) {
   const n = doc.createElement(
     typeof value === "boolean" ? String(value) : "string",
@@ -284,6 +348,9 @@ function openData(data) {
   }
   Object.assign(st, {
     logs: null,
+    patched: false,
+    live: null,
+    queries: {},
     w: data,
     history: {},
     changed: {},
@@ -304,7 +371,11 @@ function draw() {
       ([id, [title, glyph]], i) =>
         (i === 0 || i === 2 || i === 5
           ? '<span class="navgroup">' +
-            { 0: "Workspace", 2: t("Configurazione"), 5: t("Diagnostica") }[i] +
+            {
+              0: t("Area di lavoro"),
+              2: t("Configurazione"),
+              5: t("Diagnostica"),
+            }[i] +
             "</span>"
           : "") +
         '<button class="nav" data-page="' +
@@ -317,7 +388,16 @@ function draw() {
         "</button>",
     )
     .join("");
-  $("#crumb").textContent = "Workbench   /   " + t(pages[page][0]);
+  $("#crumb").textContent = "EFI  /  " + t(pages[page][0]);
+  const searchLabel = {
+    config: "Cerca chiavi o valori",
+    files: "Filtra componenti",
+    system: "Cerca nei log",
+  }[page];
+  $("#findbar").hidden = !searchLabel || (page !== "system" && !w);
+  $("#find").placeholder = t(searchLabel || "Cerca");
+  $("#find").setAttribute("aria-label", $("#find").placeholder);
+  $("#find").value = st.queries?.[page] || "";
   volumeStatus();
   watchBanner();
   if (page === "home") {
@@ -326,9 +406,7 @@ function draw() {
     return;
   }
   let head =
-    '<div class="heading"><div><div class="label">Workbench</div><h1>' +
-    t(pages[page][0]) +
-    "</h1></div></div>";
+    '<div class="heading"><div><h1>' + t(pages[page][0]) + "</h1></div></div>";
   if (w && ["config", "files", "validate"].includes(page))
     head +=
       '<div class="subline paths">' +
@@ -341,7 +419,7 @@ function draw() {
   else if (page === "system") body = systemPanel(s);
   else if (!w)
     body =
-      '<div class="card empty"><h2>' +
+      '<div class="card empty"><img src="partition.svg" alt=""><h2>' +
       t("Apri una configurazione OpenCore") +
       "</h2><p>" +
       t(
@@ -368,13 +446,19 @@ function draw() {
         if (n)
           el.append(
             kernelSelect(k, n.textContent, (v) => {
+              const old = [n.tagName, n.textContent];
               n.textContent = v;
-              sync();
+              scalarPatch(
+                ["Kernel", "Add", Number(el.dataset.range), k],
+                old,
+                n,
+              );
             }),
           );
       }
     }
   }
+  filterView();
   historyButtons();
   const save = $("[data-act=save]");
   if (save) save.disabled = !st.dirty;
@@ -391,11 +475,11 @@ function home() {
     esc(n) +
     "</small></div>";
   $("#content").innerHTML =
-    '<div class="hero"><div><span class="label">OpenCore Workbench</span><h1>' +
+    '<div class="hero"><div><span class="label">OpenCore / EFI</span><h1>' +
     t("Panoramica di sistema") +
     "</h1><p>" +
     esc(s.cpu || t("Processore non disponibile")) +
-    '</p></div><img src="chip.svg" alt=""></div><div class="stats">' +
+    '</p></div><img src="boot-flow.svg" alt=""></div><div class="stats">' +
     stat(
       t("Sistema operativo"),
       "macOS " + (s.os || "—"),
@@ -428,7 +512,8 @@ function home() {
         btn(t("Apri editor"), "go-config", "primary", "code") +
         " " +
         btn(t("Chiudi"), "close")
-      : btn(t("Apri cartella EFI"), "open", "primary", "folder") +
+      : '<img class="workspace-disk" src="partition.svg" alt="">' +
+        btn(t("Apri cartella EFI"), "open", "primary", "folder") +
         " " +
         btn(t("Volumi EFI"), "go-disks")) +
     ('</div><div class="card"><div class="head"><h2>' +
@@ -445,15 +530,35 @@ function home() {
     "</div></div>";
 }
 function disks() {
+  const selected =
+    st.disks.find((d) => d.uuid === st.volumeUUID) || selectedDisk();
+  const inspector = selected
+    ? '<div class="diskinfo"><strong>' +
+      esc(selected.name || "EFI") +
+      "</strong>" +
+      tag(t(selected.mount ? "Montata" : "Smontata"), !selected.mount) +
+      pairs([
+        [t("Dispositivo"), selected.id],
+        ["UUID", selected.uuid],
+        [t("Punto di mount"), selected.mount || "—"],
+      ]) +
+      "</div>"
+    : "<div><h2>GPT / EFI</h2><p>" + t("Seleziona un volume") + "</p></div>";
   return (
-    '<div class="actions">' +
+    '<div class="volume-layout"><section><div class="actions">' +
     btn(t("Aggiorna dischi"), "refresh", "", "reload") +
     '</div><div class="table">' +
     (st.disks
       .map(
         (d, i) =>
-          '<div class="row"><span class="tile">' +
-          icon("disk") +
+          '<div class="row"><input type="radio" name="volume" aria-label="' +
+          esc(t("Seleziona un volume") + " " + d.id) +
+          '" data-volume="' +
+          i +
+          '" ' +
+          (selected?.uuid === d.uuid ? "checked" : "") +
+          '><span class="tile">' +
+          icon(d.bus === "USB" ? "usb" : d.ejectable ? "external" : "disk") +
           '</span><div class="entry"><strong>' +
           esc(d.name || "EFI") +
           "</strong><small>" +
@@ -479,7 +584,10 @@ function disks() {
       ? '<div class="actions">' +
         btn(t("Chiudi configurazione"), "close") +
         "</div>"
-      : "")
+      : "") +
+    '</section><section class="volume-map"><img src="partition.svg" alt="GPT / EFI">' +
+    inspector +
+    "</section></div>"
   );
 }
 const categories = {
@@ -514,7 +622,7 @@ function systemPanel(s) {
       [t("Memoria"), s.ram == null ? "" : s.ram + " GiB"],
       [t("Modello SMBIOS"), s.model],
       [t("Versione OpenCore (NVRAM)"), s.oc],
-      ["Boot arguments", s.boot],
+      [t("Argomenti di avvio"), s.boot],
       [t("Build macOS"), s.build],
     ]) +
     ('</div><div class="actions"><label for="category">' +
@@ -556,6 +664,11 @@ function systemPanel(s) {
     t("Log di avvio e kernel panic") +
     "</h2>" +
     btn(t("Leggi log"), "logs") +
+    (st.logs && !st.logs.some((l) => /panic/i.test(l.path))
+      ? '<div class="log-empty"><img src="log.svg" alt="">' +
+        t("Nessun log di panic rilevato") +
+        "</div>"
+      : "") +
     (st.logs || [])
       .map(
         (l) =>
@@ -652,16 +765,29 @@ function buildTree() {
         input.spellcheck = false;
       }
       input.addEventListener("input", () => {
+        const old = [n.tagName, n.textContent];
         if (bool) {
           const next = typed(st.doc, input.checked);
           n.replaceWith(next);
           n = next;
         } else n.textContent = input.value;
-        sync();
+        scalarPatch(path, old, n);
       });
       row.append(name, input);
       parent.append(row);
       markField(input, path);
+      const csr =
+        path.length === 4 &&
+        path[0] === "NVRAM" &&
+        path[1] === "Add" &&
+        String(path[2]).toUpperCase() === bootPath[2] &&
+        label === "csr-active-config" &&
+        type === "data";
+      if (
+        csr ||
+        (path.join("/") === "Misc/Security/ScanPolicy" && type === "integer")
+      )
+        row.after(maskControl(input, csr));
       if (path.join("/") === bootPath.join("/") && type === "string")
         row.after(bootControls(n, input));
       if (["MinKernel", "MaxKernel"].includes(label) && type === "string") {
@@ -684,6 +810,7 @@ function buildTree() {
   }
   if (st.section === "DeviceProperties" && get(node, "Add")?.tagName === "dict")
     pciPanel(tree, get(node, "Add"));
+  if (st.section === "NVRAM") tree.insertAdjacentHTML("beforeend", livePanel());
   append(tree, st.section, node, 0, [st.section]);
   st.focusPath = null;
 }
@@ -725,7 +852,14 @@ function groupControls() {
           '" aria-pressed="' +
           (st.group === g) +
           '">' +
-          g +
+          t(
+            {
+              Drivers: "Driver UEFI",
+              Tools: "Strumenti UEFI",
+              Kexts: "Kext",
+              ACPI: "ACPI",
+            }[g],
+          ) +
           "</button>",
       )
       .join("") +
@@ -737,6 +871,11 @@ function filePanel() {
   return (
     groupControls() +
     '<div class="actions">' +
+    (st.group === "ACPI"
+      ? st.w.iasl
+        ? btn(t("Compila sorgente DSL"), "compile", "", "acpi")
+        : "<small>" + t("Compilatore iasl non disponibile") + "</small>"
+      : "") +
     (st.group === "Kexts"
       ? btn(t("Copia un kext…"), "import", "", "box")
       : "") +
@@ -770,6 +909,14 @@ function filePanel() {
               })
             : [];
         const detail = [
+          r.file?.header
+            ? [
+                r.file.header.signature,
+                r.file.header.oem,
+                t("Revisione") + " " + r.file.header.revision,
+                r.file.header.length + " B",
+              ].join(" / ")
+            : "",
           r.file?.version,
           r.file?.id,
           r.file?.bytes != null ? r.file.bytes + t(" byte") : "",
@@ -780,7 +927,16 @@ function filePanel() {
           .filter(Boolean)
           .join(" · ");
         return (
-          '<div class="row"><div class="entry"><strong>' +
+          '<div class="row component"><i>' +
+          icon(
+            {
+              Kexts: "chip",
+              ACPI: "acpi",
+              Drivers: "driver",
+              Tools: "terminal",
+            }[st.group],
+          ) +
+          '</i><div class="entry"><strong>' +
           esc(r.path || t("(percorso vuoto)")) +
           "</strong><small>" +
           esc(detail) +
@@ -814,9 +970,9 @@ function filePanel() {
                     "compact",
                   )
                 : "") +
-              (i > 0 ? btn("↑", "up-" + i, "compact") : "") +
+              (i > 0 ? btn(t("Sposta su"), "up-" + i, "compact", "up") : "") +
               (i + 1 < listNode().children.length
-                ? btn("↓", "down-" + i, "compact")
+                ? btn(t("Sposta giù"), "down-" + i, "compact", "down")
                 : "") +
               btn(t("Rimuovi voce"), "remove-" + i, "compact")
             : r.file.valid !== false
@@ -899,13 +1055,15 @@ function changeEntry(op, i) {
 }
 function validation() {
   return (
-    '<div class="pair"><div class="card"><div class="head"><h2>' +
+    '<div class="bootstrip"><img src="boot-flow.svg" alt="EFI, OpenCore, NVRAM, Kernel"></div><div class="pair"><div class="card"><div class="head"><h2>' +
     t("Controllo configurazione") +
     "</h2>" +
-    tag("ocvalidate 1.0.8") +
+    (st.validation
+      ? tag("ocvalidate " + st.validation.version, !st.validation.pass)
+      : "") +
     ("</div><p>" +
       t(
-        "Analizza la bozza con le regole di OpenCore 1.0.8. Per altre versioni il risultato può differire.",
+        "Il validatore segue OpenCore.efi quando la release è in cache. Versione di riserva 1.0.8.",
       ) +
       "</p>") +
     btn(t("Verifica bozza"), "verify", "primary", "shield") +
@@ -927,6 +1085,8 @@ function validation() {
     " " +
     btn(t("Mostra backup"), "backups") +
     "</div></div>" +
+    readiness() +
+    livePanel() +
     (st.validation
       ? '<div class="actions">' +
         tag(
@@ -1008,6 +1168,22 @@ async function act(a) {
       case "undo":
       case "redo": {
         const h = await rpc(a);
+        if (h.xml === undefined && !h.patch) break;
+        st.patched = !!h.patch;
+        if (h.patch) {
+          const node = h.patch.path.reduce(
+            (n, k) => (typeof k === "number" ? n.children[k] : get(n, k)),
+            root(),
+          );
+          const [type, value] = h.patch.node;
+          const next = st.doc.createElement(type);
+          next.textContent = value;
+          node.replaceWith(next);
+          st.treeEdited = true;
+          st.history = h;
+          dirty();
+          break;
+        }
         st.xml = h.xml;
         try {
           st.doc = parse(st.xml);
@@ -1055,6 +1231,9 @@ async function act(a) {
         break;
       case "xml":
         st.mode = "xml";
+        break;
+      case "live":
+        st.live = await rpc("live");
         break;
       case "logs":
         st.logs = await rpc("logs");
@@ -1218,6 +1397,27 @@ async function act(a) {
       case "backups":
         await rpc(a);
         break;
+      case "compile": {
+        const list = listNode();
+        if (list?.tagName !== "array")
+          throw Error(t("Manca ACPI/Add nella bozza"));
+        const result = await rpc("compile");
+        if (!result) break;
+        st.w.inventory.ACPI = st.w.inventory.ACPI.filter(
+          (f) => pathKey(f.path) !== pathKey(result.path),
+        );
+        st.w.inventory.ACPI.push(result);
+        if (
+          !inventoryRows().some(
+            (r) => r.n && pathKey(r.path) === pathKey(result.path),
+          )
+        ) {
+          list.append(componentEntry(st.doc, "ACPI", { path: result.path }));
+          sync();
+        }
+        notice(t("Tabella compilata e registrata nella bozza"));
+        break;
+      }
       case "import": {
         const data = await rpc("import");
         if (data) {
@@ -1262,7 +1462,7 @@ async function act(a) {
           if (
             !confirm(
               t(
-                "ocvalidate 1.0.8 segnala anomalie. Salvare comunque questa configurazione?",
+                "ocvalidate segnala anomalie. Salvare comunque questa configurazione?",
               ),
             )
           )
@@ -1273,6 +1473,7 @@ async function act(a) {
         const backup = st.dirty ? await rpc("save", { xml }) : null;
         if (st.xml === xml) st.doc = doc;
         st.original = xml;
+        st.live = null;
         dirty();
         if (backup)
           notice(t("Configurazione salvata. Copia precedente in ") + backup);
@@ -1325,11 +1526,18 @@ document.addEventListener(
 );
 document.addEventListener("input", (e) => {
   if (e.target.id === "xml") {
+    const before = st.xml;
+    const change = textChange(before, e.target.value);
+    if (st.patched) change.previous = before;
     st.xml = e.target.value;
-    checkpoint();
+    checkpoint("xmlEdit", change);
   }
 });
 document.addEventListener("change", (e) => {
+  if (e.target.hasAttribute("data-volume")) {
+    st.volumeUUID = st.disks[Number(e.target.dataset.volume)].uuid;
+    draw();
+  }
   if (e.target.id === "language") {
     const lang = e.target.value;
     work(async () => {
@@ -1338,6 +1546,14 @@ document.addEventListener("change", (e) => {
       draw();
     });
     return;
+  }
+  if (
+    e.target.id === "targetDarwin" &&
+    e.target.validity.valid &&
+    e.target.value
+  ) {
+    st.targetDarwin = Number(e.target.value);
+    draw();
   }
   if (e.target.id === "category") {
     st.category = e.target.value;

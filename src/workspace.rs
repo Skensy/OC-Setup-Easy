@@ -115,12 +115,14 @@ impl Workspace {
         xml(&fs::read(path)?)
     }
     pub fn view(&self) -> Result<Value> {
-        Ok(json!({"root":self.root,"xml":xml(&self.baseline)?,"inventory":self.inventory()?}))
+        Ok(
+            json!({"root":self.root,"iasl":crate::acpi::compiler().is_some(),"xml":xml(&self.baseline)?,"inventory":self.inventory()?}),
+        )
     }
     pub fn save(&mut self, text: &str) -> Result<PathBuf> {
         self.save_in(text, &backups()?)
     }
-    fn save_in(&mut self, text: &str, backup_dir: &Path) -> Result<PathBuf> {
+    pub(crate) fn save_in(&mut self, text: &str, backup_dir: &Path) -> Result<PathBuf> {
         self.check()?;
         let parsed = P::from_reader_xml(text.as_bytes()).context("XML plist non valido")?;
         ensure!(parsed.as_dictionary().is_some(), "Radice plist non valida");
@@ -225,7 +227,7 @@ impl Workspace {
                     Self::scan(base, &plugins, extensions, out)?;
                 }
             } else if ty.is_file() && extensions.contains(&ext.as_str()) {
-                out.push(json!({"path":rel,"bytes":entry.metadata()?.len()}));
+                out.push(json!({"path":rel,"bytes":entry.metadata()?.len(),"header":(ext=="aml").then(||crate::acpi::header(&path)).flatten()}));
             } else if ty.is_dir() && !extensions.contains(&"kext") {
                 Self::scan(base, &path, extensions, out)?;
             }
@@ -320,16 +322,16 @@ pub(crate) fn rename_exclusive(source: &Path, dest: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub fn validate(text: &str) -> Result<Value> {
+pub fn validate(text: &str, root: &Path) -> Result<Value> {
     let mut file = NamedTempFile::new()?;
     file.write_all(text.as_bytes())?;
-    let bin = crate::plist_tools::resource("ocvalidate")?;
+    let (bin, version) = crate::validator::select(root)?;
     if !bin.is_file() {
         bail!("ocvalidate assente nel bundle");
     }
     let res = Command::new(bin).arg(file.path()).output()?;
     Ok(
-        json!({"pass":res.status.success(),"log":format!("{}{}",String::from_utf8_lossy(&res.stdout),String::from_utf8_lossy(&res.stderr))}),
+        json!({"version":version,"pass":res.status.success(),"log":format!("{}{}",String::from_utf8_lossy(&res.stdout),String::from_utf8_lossy(&res.stderr))}),
     )
 }
 

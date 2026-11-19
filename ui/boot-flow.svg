@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 410 150" fill="none">
+<g stroke="#90bdc9" stroke-width="1.5" stroke-linejoin="round">
+<path d="M16 83h36m39 0h52m52 0h47l18-18h31m-87 18h29l16 17h42" stroke-dasharray="3 4"/>
+<path d="M43 65l29-13 29 13-29 14z M43 65v18l29 14 29-14V65m-29 14v18 M49 83l12 6" fill="#264956"/>
+<rect x="144" y="55" width="56" height="56" rx="7" fill="#264956"/><rect x="153" y="64" width="38" height="38" rx="3"/><path d="M154 51v-6m9 6v-6m9 6v-6m9 6v-6m9 6v-6m-36 70v6m9-6v6m9-6v6m9-6v6m9-6v6"/>
+<rect x="292" y="42" width="90" height="31" rx="4"/><rect x="292" y="90" width="90" height="31" rx="4"/>
+<path d="M382 57h13v49h-12m4-4-4 4 4 4"/>
+</g><g fill="#e5f4f4" font-family="Menlo,monospace" font-size="12" text-anchor="middle">
+<text x="72" y="120">EFI</text><text x="172" y="88">OC</text><text x="172" y="140">OpenCore</text><text x="337" y="62">NVRAM</text><text x="337" y="110">Kernel</text></g></svg>

@@ -78,7 +78,7 @@ fn check(path: &Path) -> Result<u8> {
     } else {
         String::from_utf8(bytes)?
     };
-    let validation = workspace::validate(&xml)?;
+    let validation = workspace::validate(&xml, path.parent().context("Destinazione non valida")?)?;
     println!("{}", validation["log"].as_str().unwrap_or_default());
     if P::from_reader_xml(xml.as_bytes()).is_err() {
         return Ok(1);

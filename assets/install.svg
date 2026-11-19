@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400">
+<rect width="640" height="400" fill="#ebf0f1"/><path d="M0 0h640v104H0z" fill="#19333e"/>
+<g font-family="Helvetica" fill="#edf7f8"><text x="30" y="48" font-size="28">OC Setup Easy</text><text x="32" y="77" font-size="14">Trascina l’app in Applicazioni  /  Drag the app to Applications</text></g>
+<g fill="none" stroke="#8aadb5" stroke-width="1.5"><path d="M218 201h177m-12-9 12 9-12 9"/><rect x="542" y="25" width="52" height="52" rx="6"/><rect x="552" y="35" width="32" height="32" rx="2"/><path d="M551 20v-9m11 9v-9m11 9v-9m12 9v-9m-34 72v10m11-10v10m11-10v10m12-10v10"/></g>
+<path d="M24 292h592" stroke="#b5c6ca"/></svg>

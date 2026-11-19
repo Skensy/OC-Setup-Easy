@@ -199,14 +199,95 @@ const CURL: &[&str] = &[
     "--max-time",
     "120",
 ];
+fn accept_etag(value: &str) -> bool {
+    let quoted = value.strip_prefix("W/").unwrap_or(value);
+    quoted.len() >= 2
+        && quoted.starts_with('"')
+        && quoted.ends_with('"')
+        && quoted[1..quoted.len() - 1]
+            .bytes()
+            .all(|c| c == 0x21 || (0x23..=0x7e).contains(&c))
+}
+fn release_response(
+    code: &str,
+    headers: &str,
+    body: &[u8],
+    cached: Option<&Value>,
+) -> Result<Value> {
+    if code == "304" {
+        return cached.cloned().context("Cache GitHub non disponibile");
+    }
+    ensure!(code == "200", "Risposta GitHub non valida");
+    let release: Value = serde_json::from_slice(body)?;
+    ensure!(
+        release["assets"].is_array() && release["tag_name"].is_string(),
+        "Risposta GitHub non valida"
+    );
+    let final_block = headers.trim_end().rsplit("\r\n\r\n").next().unwrap_or("");
+    let etag = final_block
+        .lines()
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("etag"))
+        .map(|(_, v)| v.trim())
+        .filter(|v| accept_etag(v));
+    Ok(json!({"etag":etag,"release":release}))
+}
 pub(crate) fn release(repo: &str) -> Result<Value> {
+    let dir = crate::validator::cache()?.join("GitHub");
+    fs::create_dir_all(&dir)?;
+    let cache = dir.join(format!("{}.json", repo.replace('/', "--")));
+    let cached = fs::read(&cache)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(|r| r["release"]["assets"].is_array() && r["release"]["tag_name"].is_string());
+    let body = NamedTempFile::new()?;
+    let headers = NamedTempFile::new()?;
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     let mut args = CURL.to_vec();
-    args.extend(["--max-filesize", "1048576", &url]);
-    Ok(serde_json::from_slice(&system::output(
-        "/usr/bin/curl",
-        &args,
-    )?)?)
+    let conditional;
+    if let Some(etag) = cached
+        .as_ref()
+        .and_then(|r| r["etag"].as_str())
+        .filter(|v| accept_etag(v))
+    {
+        conditional = format!("If-None-Match: {etag}");
+        args.extend(["-H", &conditional]);
+    }
+    args.extend([
+        "--max-filesize",
+        "1048576",
+        "-D",
+        headers.path().to_str().context("Percorso non valido")?,
+        "-o",
+        body.path().to_str().context("Percorso non valido")?,
+        "-w",
+        "%{http_code}",
+        &url,
+    ]);
+    let code = String::from_utf8(system::output("/usr/bin/curl", &args)?)?;
+    let response = release_response(
+        &code,
+        &fs::read_to_string(headers.path())?,
+        &fs::read(body.path())?,
+        cached.as_ref(),
+    )?;
+    if code == "200" {
+        let mut tmp = NamedTempFile::new_in(dir)?;
+        serde_json::to_writer(&mut tmp, &response)?;
+        tmp.persist(cache)?;
+    }
+    Ok(response["release"].clone())
+}
+
+#[test]
+fn etag_cache_uses_final_response_and_handles_304() -> Result<()> {
+    let headers = "HTTP/1.1 200 Connection established\r\nETag: \"wrong\"\r\n\r\nHTTP/2 200\r\netag: W/\"abc\"\r\n";
+    let r = release_response("200", headers, br#"{"assets":[],"tag_name":"test"}"#, None)?;
+    assert_eq!(r["etag"], "W/\"abc\"");
+    assert_eq!(release_response("304", "", b"", Some(&r))?, r);
+    assert!(release_response("304", "", b"", None).is_err());
+    assert!(!accept_etag("\"a\r\nb\""));
+    Ok(())
 }
 pub fn check_update(w: &mut Workspace) -> Result<Value> {
     w.update = None;
@@ -232,6 +313,7 @@ pub fn check_update(w: &mut Workspace) -> Result<Value> {
         .context("Missing release SHA-256")?;
     let url = format!("https://github.com/acidanthera/OpenCorePkg/releases/download/{tag}/{name}");
     let archive = download(&url, digest)?;
+    crate::validator::install(archive.path(), tag)?;
     let sample = system::output(
         "/usr/bin/unzip",
         &[

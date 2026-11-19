@@ -60,7 +60,7 @@ function preview(title, text, apply) {
     overlay.append(box);
     document.body.append(overlay);
     cancel.focus();
-    const first=box.querySelector("input:enabled, button:enabled");
+    const first = box.querySelector("input:enabled, button:enabled");
     overlay.onkeydown = (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -275,7 +275,7 @@ function volumeStatus() {
       "beforeend",
       " " +
         btn(
-          current.ejectable ? "Salva, smonta ed espelli" : "Salva e smonta",
+          t(current.ejectable ? "Salva, smonta ed espelli" : "Salva e smonta"),
           "finish",
           "compact",
         ),

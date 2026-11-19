@@ -214,3 +214,46 @@ fn disabled_and_out_of_range_kexts_do_not_conflict() {
     }
     assert!(!active(&P::Dictionary(Default::default()), &host));
 }
+
+const APPLE: &str = "7C436110-AB2A-4BBB-A880-FE41995C9F82";
+const OC: &str = "4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102";
+
+fn compare_nvram(config: &P, nvram: &P) -> Vec<Value> {
+    fn display(value: &P, binary: bool) -> Option<String> {
+        if let Some(bytes) = value.as_data() {
+            if binary {
+                return Some(bytes.iter().map(|b| format!("{b:02X}")).collect());
+            }
+            return Some(String::from_utf8_lossy(bytes).trim_end_matches('\0').into());
+        }
+        value.as_string().map(str::to_owned)
+    }
+    let dict = field(config, "NVRAM")
+        .and_then(|p| field(p, "Add"))
+        .and_then(P::as_dictionary);
+    [(APPLE,"boot-args"),(APPLE,"csr-active-config"),(OC,"opencore-version")].iter().map(|&(guid,key)| {
+        let config = dict.and_then(|d|d.iter().find(|(k,_)|k.eq_ignore_ascii_case(guid)))
+            .and_then(|(_,p)|field(p,key)).and_then(|p|display(p,key=="csr-active-config"));
+        let scoped = format!("{guid}:{key}");
+        let live = nvram.as_dictionary().and_then(|d|d.iter().find(|(k,_)|k.eq_ignore_ascii_case(&scoped)).map(|(_,v)|v)
+            .or_else(||(guid==APPLE).then(||d.get(key)).flatten())).and_then(|v|display(v,key=="csr-active-config"));
+        json!({"key":key,"guid":guid,"different":config.is_some() && live.is_some() && config!=live,"config":config,"live":live})
+    }).collect()
+}
+pub fn live(w: &crate::workspace::Workspace) -> Result<Value> {
+    let config = P::from_reader_xml(w.disk_xml()?.as_bytes())?;
+    let nvram =
+        P::from_reader_xml(crate::system::output("/usr/sbin/nvram", &["-x", "-p"])?.as_slice())?;
+    Ok(json!(compare_nvram(&config, &nvram)))
+}
+
+#[test]
+fn nvram_scopes_and_binary_values() {
+    let config=P::from_reader_xml(format!("<plist><dict><key>NVRAM</key><dict><key>Add</key><dict><key>{APPLE}</key><dict><key>boot-args</key><string>-v</string><key>csr-active-config</key><data>AwgAAA==</data></dict></dict></dict></dict></plist>").as_bytes()).unwrap();
+    let live=P::from_reader_xml(b"<plist><dict><key>boot-args</key><data>LXY=</data><key>csr-active-config</key><data>AAAAAA==</data><key>opencore-version</key><string>foreign</string></dict></plist>".as_slice()).unwrap();
+    let rows = compare_nvram(&config, &live);
+    assert_eq!(rows[0]["different"], false);
+    assert_eq!(rows[1]["different"], true);
+    assert_eq!(rows[1]["config"], "03080000");
+    assert!(rows[2]["live"].is_null());
+}
