@@ -536,3 +536,53 @@ body.wait aside {
     padding: 11px;
   }
 }
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: #15251988;
+  display: grid;
+  place-items: center;
+  z-index: 15;
+  padding: 20px;
+}
+.modal {
+  width: min(780px, 100%);
+  max-height: 88vh;
+  overflow: auto;
+}
+.modal pre {
+  max-height: 60vh;
+  user-select: text;
+}
+.field + select {
+  margin: 0 0 6px 12px;
+}
+.highlight {
+  outline: 3px solid #ba7a1c !important;
+  outline-offset: 2px;
+}
+
+.sidefoot select {
+  width: 100%;
+}
+.sidefoot.session {
+  margin-top: 8px;
+}
+.sidefoot:has(select) {
+  border-top: 0;
+}
+#active-volume {
+  font-size: 11px;
+  text-align: right;
+  margin-left: auto;
+  max-width: 48%;
+  overflow-wrap: anywhere;
+}
+header {
+  gap: 9px;
+  min-height: 70px;
+  height: auto;
+}
+header #open {
+  flex-shrink: 0;
+}

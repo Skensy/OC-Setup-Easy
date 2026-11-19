@@ -19,6 +19,7 @@ use tempfile::{Builder, NamedTempFile};
 const CONFIG: &str = "config.plist";
 pub struct Workspace {
     pub root: PathBuf,
+    pub update: Option<crate::maintenance::Plan>,
     baseline: Vec<u8>,
     device: u64,
     inode: u64,
@@ -70,12 +71,13 @@ impl Workspace {
         let meta = root.metadata()?;
         Ok(Self {
             root,
+            update: None,
             baseline,
             device: meta.dev(),
             inode: meta.ino(),
         })
     }
-    fn check(&self) -> Result<()> {
+    pub fn check(&self) -> Result<()> {
         let m = self
             .root
             .metadata()
@@ -85,6 +87,24 @@ impl Workspace {
             "Il volume o la cartella è cambiato. Riaprilo."
         );
         Ok(())
+    }
+    pub fn assert_unchanged(&self) -> Result<()> {
+        self.check()?;
+        let path = self.root.join(CONFIG);
+        ensure!(
+            path.canonicalize()? == path && fs::read(path)? == self.baseline,
+            "Il file su disco è cambiato. Riapri la cartella per leggere la nuova versione."
+        );
+        Ok(())
+    }
+    pub fn disk_xml(&self) -> Result<String> {
+        self.check()?;
+        let path = self.root.join(CONFIG);
+        ensure!(
+            path.canonicalize()? == path,
+            "config.plist è un collegamento simbolico"
+        );
+        xml(&fs::read(path)?)
     }
     pub fn view(&self) -> Result<Value> {
         Ok(json!({"root":self.root,"xml":xml(&self.baseline)?,"inventory":self.inventory()?}))
@@ -104,14 +124,7 @@ impl Workspace {
         lock.try_lock_exclusive()
             .context("Un altro salvataggio è in corso")?;
         let target = self.root.join(CONFIG);
-        let check_file = || -> Result<()> {
-            ensure!(
-                target.canonicalize()? == target && fs::read(&target)? == self.baseline,
-                "Il file su disco è cambiato. Riapri la cartella per leggere la nuova versione."
-            );
-            Ok(())
-        };
-        check_file()?;
+        self.assert_unchanged()?;
         let mut next = Vec::new();
         if self.baseline.starts_with(b"bplist") {
             parsed.to_writer_binary(&mut next)?;
@@ -130,7 +143,7 @@ impl Workspace {
         bak.write_all(&self.baseline)?;
         bak.as_file().sync_all()?;
         let (_, backup) = bak.keep()?;
-        check_file()?;
+        self.assert_unchanged()?;
         temp.persist(target)?;
         self.baseline = next;
         Ok(backup)

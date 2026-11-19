@@ -12,23 +12,31 @@ extern void oc_free(char *);
 @property(strong) NSURL *page;
 @property BOOL dirty;
 @property BOOL working;
+@property BOOL english;
 @end
 
 @implementation App
-- (void)applicationDidFinishLaunching:(NSNotification *)note {
+- (NSString *)it:(NSString *)it en:(NSString *)en {
+  return self.english ? en : it;
+}
+- (void)installMenu {
   NSMenu *menu = [NSMenu new];
   NSMenuItem *main = [menu addItemWithTitle:@"" action:nil keyEquivalent:@""];
   main.submenu = [NSMenu new];
-  [main.submenu addItemWithTitle:@"Esci da OC Setup Easy"
+  [main.submenu addItemWithTitle:[self it:@"Esci da OC Setup Easy"
+                                       en:@"Quit OC Setup Easy"]
                           action:@selector(terminate:)
                    keyEquivalent:@"q"];
-  NSMenuItem *edit = [menu addItemWithTitle:@"Modifica"
+  NSMenuItem *edit = [menu addItemWithTitle:[self it:@"Modifica" en:@"Edit"]
                                      action:nil
                               keyEquivalent:@""];
-  edit.submenu = [[NSMenu alloc] initWithTitle:@"Modifica"];
+  edit.submenu = [[NSMenu alloc] initWithTitle:[self it:@"Modifica"
+                                                     en:@"Edit"]];
   NSArray *titles = @[
-    @"Annulla", @"Ripristina", @"Taglia", @"Copia", @"Incolla",
-    @"Seleziona tutto"
+    [self it:@"Annulla" en:@"Undo"], [self it:@"Ripristina" en:@"Redo"],
+    [self it:@"Taglia" en:@"Cut"], [self it:@"Copia" en:@"Copy"],
+    [self it:@"Incolla" en:@"Paste"],
+    [self it:@"Seleziona tutto" en:@"Select All"]
   ];
   NSArray *actions =
       @[ @"undo:", @"redo:", @"cut:", @"copy:", @"paste:", @"selectAll:" ];
@@ -38,6 +46,25 @@ extern void oc_free(char *);
                             action:NSSelectorFromString(actions[i])
                      keyEquivalent:keys[i]];
   NSApp.mainMenu = menu;
+}
+- (void)applicationDidFinishLaunching:(NSNotification *)note {
+  NSString *choice =
+      [NSUserDefaults.standardUserDefaults stringForKey:@"InterfaceLanguage"];
+  self.english = choice
+                     ? [choice isEqual:@"en"]
+                     : ![NSLocale.preferredLanguages.firstObject.lowercaseString
+                           hasPrefix:@"it"];
+  [self installMenu];
+  NSNotificationCenter *center = NSWorkspace.sharedWorkspace.notificationCenter;
+  for (NSNotificationName name in @[
+         NSWorkspaceDidMountNotification, NSWorkspaceDidUnmountNotification,
+         NSWorkspaceDidRenameVolumeNotification
+       ]) {
+    [center addObserver:self
+               selector:@selector(volumeChanged:)
+                   name:name
+                 object:nil];
+  }
   WKWebViewConfiguration *config = [WKWebViewConfiguration new];
   [config.userContentController
       addScriptMessageHandlerWithReply:self
@@ -74,6 +101,13 @@ extern void oc_free(char *);
       allowingReadAccessToURL:self.page.URLByDeletingLastPathComponent];
   [NSApp activateIgnoringOtherApps:YES];
 }
+- (void)volumeChanged:(NSNotification *)notification {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self.view evaluateJavaScript:
+                   @"window.dispatchEvent(new Event('ocVolumesChanged'))"
+                completionHandler:nil];
+  });
+}
 - (void)webView:(WKWebView *)web
     decidePolicyForNavigationAction:(WKNavigationAction *)action
                     decisionHandler:(void (^)(WKNavigationActionPolicy))decide {
@@ -84,7 +118,7 @@ extern void oc_free(char *);
 - (BOOL)confirm:(NSString *)text button:(NSString *)button {
   NSAlert *alert = [NSAlert new];
   alert.messageText = text;
-  [alert addButtonWithTitle:@"Annulla"];
+  [alert addButtonWithTitle:[self it:@"Annulla" en:@"Cancel"]];
   [alert addButtonWithTitle:button];
   return [alert runModal] == NSAlertSecondButtonReturn;
 }
@@ -92,15 +126,17 @@ extern void oc_free(char *);
     runJavaScriptConfirmPanelWithMessage:(NSString *)message
                         initiatedByFrame:(WKFrameInfo *)frame
                        completionHandler:(void (^)(BOOL))done {
-  done([self confirm:message button:@"Continua"]);
+  done([self confirm:message button:[self it:@"Continua" en:@"Continue"]]);
 }
 - (BOOL)canClose {
   if (self.working) {
     NSBeep();
     return NO;
   }
-  return !self.dirty || [self confirm:@"Scartare le modifiche non salvate?"
-                               button:@"Scarta"];
+  return !self.dirty ||
+         [self confirm:[self it:@"Scartare le modifiche non salvate?"
+                             en:@"Discard unsaved changes?"]
+                button:[self it:@"Scarta" en:@"Discard"]];
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender {
   if (![self canClose])
@@ -122,25 +158,51 @@ extern void oc_free(char *);
   if (!msg.frameInfo.mainFrame ||
       ![msg.frameInfo.request.URL isEqual:self.page] ||
       ![msg.body isKindOfClass:NSDictionary.class]) {
-    reply(nil, @"Origine non valida");
+    reply(nil, [self it:@"Origine non valida" en:@"Invalid origin"]);
     return;
   }
   NSMutableDictionary *req = [msg.body mutableCopy];
   NSString *op = req[@"op"];
+  if ([op isEqual:@"language"]) {
+    NSString *choice = req[@"value"];
+    if ([choice isEqual:@"it"] || [choice isEqual:@"en"]) {
+      self.english = [choice isEqual:@"en"];
+      [NSUserDefaults.standardUserDefaults setObject:choice
+                                              forKey:@"InterfaceLanguage"];
+      [self installMenu];
+    }
+    reply(@{@"ok" : self.english ? @"en" : @"it"}, nil);
+    return;
+  }
   if ([op isEqual:@"dirty"]) {
     self.dirty = [req[@"value"] boolValue];
     reply(@{}, nil);
     return;
   }
   if (self.working) {
-    reply(nil, @"Operazione in corso");
+    reply(nil, [self it:@"Operazione in corso" en:@"Operation in progress"]);
     return;
+  }
+  if ([op isEqual:@"export"]) {
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.title = [self it:@"Esporta config anonimizzato"
+                        en:@"Export anonymized config"];
+    panel.prompt = [self it:@"Esporta" en:@"Export"];
+    panel.nameFieldStringValue = @"config-anonymous.plist";
+    if ([panel runModal] != NSModalResponseOK) {
+      reply(@{@"cancelled" : @YES}, nil);
+      return;
+    }
+    req[@"path"] = panel.URL.path;
   }
   if (([op isEqual:@"open"] && !req[@"volume"]) || [op isEqual:@"import"]) {
     BOOL importing = [op isEqual:@"import"];
     NSOpenPanel *panel = [NSOpenPanel openPanel];
-    panel.title = importing ? @"Scegli il kext da copiare"
-                            : @"Apri il volume o la cartella EFI / OC";
+    panel.title = importing ? [self it:@"Scegli il kext da copiare"
+                                    en:@"Choose a kext to import"]
+                            : [self it:@"Apri il volume o la cartella EFI / OC"
+                                    en:@"Open an EFI volume or folder"];
+    panel.prompt = [self it:@"Apri" en:@"Open"];
     panel.canChooseDirectories = YES;
     panel.canChooseFiles = importing;
     panel.allowsMultipleSelection = NO;
@@ -170,7 +232,7 @@ extern void oc_free(char *);
       if (result)
         reply(result, nil);
       else
-        reply(nil, @"Risposta non valida");
+        reply(nil, [self it:@"Risposta non valida" en:@"Invalid response"]);
     });
   });
 }

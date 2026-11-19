@@ -2,7 +2,7 @@
   <img src="assets/icon.svg" width="100" alt="OC Setup Easy app icon">
   <h1>OC Setup Easy</h1>
   <p>Mount your EFI, compare installed kexts with <code>Kernel → Add</code>, and edit OpenCore on your Hackintosh.</p>
-  <p><b>Rust</b> · Native macOS WebKit · Italian interface · Works offline</p>
+  <p><b>Rust</b> · Native macOS WebKit · Italian and English · Works offline</p>
   <p><a href="https://github.com/Skensy/OC-Setup-Easy/releases/latest"><b>Download for macOS (x86-64)</b></a></p>
 </div>
 
@@ -14,7 +14,7 @@ Download the app ZIP from [GitHub Releases](https://github.com/Skensy/OC-Setup-E
 
 ## Edit your first configuration
 
-The interface is in Italian. The button names below match what you’ll see in the app.
+The 0.2 source build supports English and Italian. Use the language selector at the bottom of the sidebar to switch without closing your draft. The app remembers your choice. The published 0.1.0 build uses the Italian labels shown below.
 
 1. Open **Volumi EFI** (EFI volumes). Identify your disk by its model, connection, and device identifier. Click **Monta** to mount it, then **Apri EFI** to open it. To work on a copy, use **Apri cartella EFI** and select the volume, the EFI folder, or the OC folder containing `config.plist`.
 2. Open **Verifica e backup** (validation and backup) and create a ZIP before making changes. When OC sits inside EFI, the archive includes the entire EFI folder. Opening a standalone OC folder backs up that folder.
@@ -31,6 +31,16 @@ The interface is in Italian. The button names below match what you’ll see in t
 | Kexts and components | On-disk bundles and plug-ins, versions, bundle IDs, declared dependencies, and load order among detected bundles. Compare and register ACPI tables, UEFI drivers, and tools. Removing a plist entry leaves its file on disk. |
 | Validation and backups | Full ocvalidate output for the current draft, a copy of the previous plist on every save, and ZIP backups on demand. |
 | Hardware and system | Boot arguments, loaded kexts, power profiles, and the reports available through system_profiler on your Mac, including graphics, audio, PCI, USB, networking, and NVMe. |
+
+## Workspace tools in 0.2
+
+- Use **Sort by dependencies** or **Sync EFI folders** to preview kext order, additions, and orphaned entries. Applying the preview changes the draft. When a cycle prevents sorting, the preview lists its members and preserves the current order.
+- Use the Darwin version presets alongside MinKernel and MaxKernel, or enter a custom value in the plist editor.
+- **Validate draft** shows schema output and hardware diagnostics side by side. Click a reported location to open the corresponding field or the closest identifiable section.
+- **Show changes** compares the current on-disk plist with the draft by path and XML. **Export anonymized config** writes a separate copy with the serial, MLB, UUID and ROM fields in PlatformInfo masked. Other custom keys and NVRAM entries may contain identifying data.
+- In **PlatformInfo**, check the serial and MLB against the configured model or generate a new serial, MLB and UUID with macserial. The checks run locally.
+- Read boot and panic logs from **Hardware and system**. The header shows mounted EFIs. With a configuration open on a mounted EFI, you can validate, save and unmount it. Ejecting an external device also unmounts its other volumes.
+- **Check for OpenCore updates** contacts the official release service on demand and checks the archive’s SHA-256. Review the changed x86-64 boot files and existing standard drivers before applying. The app verifies a full EFI backup before replacing them. Schema validation still uses the bundled 1.0.8 validator.
 
 ## Backups and recovery
 
@@ -49,7 +59,14 @@ Install the Xcode Command Line Tools and stable Rust with Cargo on macOS. Run th
 open "dist/OC Setup Easy.app"
 ```
 
-The script builds for the host Mac’s architecture. On the first build, it downloads the Rust dependencies and the official OpenCore 1.0.8 archive. It verifies the archive’s SHA-256 digest, extracts ocvalidate, and ad-hoc signs the app bundle.
+The script builds for the host Mac’s architecture. On the first build, it downloads the Rust dependencies and the official OpenCore 1.0.8 archive. It verifies the archive’s SHA-256 digest, extracts ocvalidate and macserial, and ad-hoc signs the app bundle.
+
+To build a Universal app with both Intel and Apple Silicon executables, install both Rust targets and pass the packaging flag.
+
+```sh
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+./scripts/build-app.sh --universal
+```
 
 ### Source and tests
 

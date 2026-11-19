@@ -9,6 +9,8 @@
     />
     <title>OC Setup Easy</title>
     <link rel="stylesheet" href="style.css" />
+    <script defer src="language.js"></script>
+    <script defer src="tools.js"></script>
     <script defer src="app.js"></script>
   </head>
   <body>
@@ -21,14 +23,22 @@
       </div>
       <nav id="nav" aria-label="Navigazione principale"></nav>
       <div class="sidefoot">
-        <span class="led"></span> Sessione locale <small>v0.1</small>
+        <select id="language" aria-label="Lingua">
+          <option value="it">Italiano</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+      <div class="sidefoot session">
+        <span class="led"></span> <span id="local-label">Sessione locale</span>
+        <small>v0.2</small>
       </div>
     </aside>
     <main>
       <header>
-        <span id="crumb"></span
+        <span id="crumb"></span><span id="active-volume" class="paths"></span
         ><button id="open" class="primary">
-          <i data-icon="folder"></i>Apri cartella EFI
+          <i data-icon="folder"></i
+          ><span id="open-label">Apri cartella EFI</span>
         </button>
       </header>
       <div id="notice" role="status" hidden></div>

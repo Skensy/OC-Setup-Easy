@@ -85,7 +85,7 @@ const pairs = (entries) =>
         "<div><dt>" +
         esc(k) +
         "</dt><dd>" +
-        esc(v || "Non disponibile") +
+        esc(v || t("Non disponibile")) +
         "</dd></div>",
     )
     .join("") +
@@ -101,9 +101,14 @@ const bridge = (op, params = {}) =>
   window.webkit.messageHandlers.oc.postMessage({ op, ...params });
 async function rpc(op, params = {}) {
   const r = await bridge(op, params);
-  if (r.error) throw Error(r.error);
+  if (r.error) throw Error(translatedError(r.error));
   return r.cancelled ? null : r.ok;
 }
+let volumesChanged = false;
+window.addEventListener("ocVolumesChanged", () => {
+  volumesChanged = true;
+  if (!st.busy) work(async () => {});
+});
 async function work(fn) {
   if (st.busy) return;
   st.busy = true;
@@ -116,6 +121,16 @@ async function work(fn) {
   } catch (e) {
     notice(e.message || String(e), true);
   } finally {
+    try {
+      while (volumesChanged) {
+        volumesChanged = false;
+        st.disks = await rpc("disks");
+        volumeStatus();
+        if (st.page === "disks" || st.page === "home") draw();
+      }
+    } catch (e) {
+      notice(e.message, true);
+    }
     st.busy = false;
     $("main").inert = false;
     $("aside").inert = false;
@@ -133,7 +148,7 @@ function dirty() {
   const save = $("[data-act=save]");
   if (save) save.disabled = !value;
   const flag = $("#dirty");
-  if (flag) flag.textContent = value ? "Modifiche in bozza" : "Su disco";
+  if (flag) flag.textContent = value ? t("Modifiche in bozza") : t("Su disco");
 }
 function parse(text) {
   const doc = new DOMParser().parseFromString(text, "application/xml");
@@ -144,7 +159,7 @@ function parse(text) {
     doc.documentElement.firstElementChild.tagName !== "dict"
   )
     throw Error(
-      "XML non valido. Controlla la struttura del plist nella vista XML.",
+      t("XML non valido. Controlla la struttura del plist nella vista XML."),
     );
   for (const dict of doc.getElementsByTagName("dict")) {
     const keys = new Set(),
@@ -156,7 +171,7 @@ function parse(text) {
         items[i + 1].tagName === "key" ||
         keys.has(items[i].textContent)
       )
-        throw Error("Dizionario con chiave duplicata o valore mancante.");
+        throw Error(t("Dizionario con chiave duplicata o valore mancante."));
       keys.add(items[i].textContent);
     }
   }
@@ -183,7 +198,7 @@ function typed(doc, value) {
   return n;
 }
 function discard() {
-  return !st.dirty || confirm("Scartare le modifiche in bozza?");
+  return !st.dirty || confirm(t("Scartare le modifiche in bozza?"));
 }
 function openData(data) {
   let doc = null;
@@ -193,6 +208,7 @@ function openData(data) {
     notice(err.message, true);
   }
   Object.assign(st, {
+    logs: null,
     w: data,
     xml: data.xml,
     original: data.xml,
@@ -211,7 +227,7 @@ function draw() {
       ([id, [title, glyph]], i) =>
         (i === 0 || i === 2 || i === 5
           ? '<span class="navgroup">' +
-            { 0: "Workspace", 2: "Configurazione", 5: "Diagnostica" }[i] +
+            { 0: "Workspace", 2: t("Configurazione"), 5: t("Diagnostica") }[i] +
             "</span>"
           : "") +
         '<button class="nav" data-page="' +
@@ -220,30 +236,37 @@ function draw() {
         (id === page ? 'aria-current="page"' : "") +
         ">" +
         icon(glyph) +
-        title +
+        t(title) +
         "</button>",
     )
     .join("");
-  $("#crumb").textContent = "Workbench   /   " + pages[page][0];
+  $("#crumb").textContent = "Workbench   /   " + t(pages[page][0]);
+  volumeStatus();
   if (page === "home") return home();
   let head =
     '<div class="heading"><div><div class="label">Workbench</div><h1>' +
-    pages[page][0] +
+    t(pages[page][0]) +
     "</h1></div></div>";
   if (w && ["config", "files", "validate"].includes(page))
     head +=
       '<div class="subline paths">' +
       esc(w.root) +
       '/config.plist · <span id="dirty">' +
-      (st.dirty ? "Modifiche in bozza" : "Su disco") +
+      (st.dirty ? t("Modifiche in bozza") : t("Su disco")) +
       "</span></div>";
   let body;
   if (page === "disks") body = disks();
   else if (page === "system") body = systemPanel(s);
   else if (!w)
     body =
-      '<div class="card empty"><h2>Apri una configurazione OpenCore</h2><p>Seleziona una cartella EFI o OC, anche da un backup. Per accedere a una partizione usa Volumi EFI.</p>' +
-      btn("Apri cartella EFI", "open", "primary", "folder") +
+      '<div class="card empty"><h2>' +
+      t("Apri una configurazione OpenCore") +
+      "</h2><p>" +
+      t(
+        "Seleziona una cartella EFI o OC, anche da un backup. Per accedere a una partizione usa Volumi EFI.",
+      ) +
+      "</p>" +
+      btn(t("Apri cartella EFI"), "open", "primary", "folder") +
       "</div>";
   else if (page === "config") body = config();
   else if (page === "files") body = filePanel();
@@ -253,6 +276,22 @@ function draw() {
     if (st.mode === "xml") {
       $("#xml").value = st.xml;
     } else buildTree();
+  }
+  if (page === "files" && w && st.group === "Kexts") {
+    const rows = inventoryRows();
+    for (const el of document.querySelectorAll("[data-range]")) {
+      const entry = rows[Number(el.dataset.range)].n;
+      for (const k of ["MinKernel", "MaxKernel"]) {
+        const n = get(entry, k);
+        if (n)
+          el.append(
+            kernelSelect(k, n.textContent, (v) => {
+              n.textContent = v;
+              sync();
+            }),
+          );
+      }
+    }
   }
   const save = $("[data-act=save]");
   if (save) save.disabled = !st.dirty;
@@ -269,55 +308,63 @@ function home() {
     esc(n) +
     "</small></div>";
   $("#content").innerHTML =
-    '<div class="hero"><div><span class="label">OpenCore Workbench</span><h1>Panoramica di sistema</h1><p>' +
-    esc(s.cpu || "Processore non disponibile") +
+    '<div class="hero"><div><span class="label">OpenCore Workbench</span><h1>' +
+    t("Panoramica di sistema") +
+    "</h1><p>" +
+    esc(s.cpu || t("Processore non disponibile")) +
     '</p></div><img src="chip.svg" alt=""></div><div class="stats">' +
     stat(
-      "Sistema operativo",
+      t("Sistema operativo"),
       "macOS " + (s.os || "—"),
       "Build " + (s.build || "—"),
     ) +
     stat(
-      "Memoria fisica",
+      t("Memoria fisica"),
       s.ram == null ? "—" : s.ram + " GiB",
-      (s.cores || "—") + " core · " + (s.threads || "—") + " thread",
+      (s.cores || "—") + t(" core · ") + (s.threads || "—") + t(" thread"),
     ) +
     stat(
-      "Partizioni EFI",
+      t("Partizioni EFI"),
       String(st.disks.length).padStart(2, "0"),
-      st.disks.filter((d) => d.mount).length + " montate",
+      st.disks.filter((d) => d.mount).length + t(" montate"),
     ) +
     "</div>" +
-    '<div class="pair"><div class="card"><div class="head"><h2>Configurazione</h2><span class="tile">' +
+    ('<div class="pair"><div class="card"><div class="head"><h2>' +
+      t("Configurazione") +
+      '</h2><span class="tile">') +
     icon("folder") +
     "</span></div><p>" +
-    (w ? "Cartella di lavoro aperta" : "Scegli l’EFI su cui vuoi lavorare.") +
+    (w
+      ? t("Cartella di lavoro aperta")
+      : t("Scegli l’EFI su cui vuoi lavorare.")) +
     "</p>" +
     (w
       ? '<p class="paths">' +
         esc(w.root) +
         "</p>" +
-        btn("Apri editor", "go-config", "primary", "code") +
+        btn(t("Apri editor"), "go-config", "primary", "code") +
         " " +
-        btn("Chiudi", "close")
-      : btn("Apri cartella EFI", "open", "primary", "folder") +
+        btn(t("Chiudi"), "close")
+      : btn(t("Apri cartella EFI"), "open", "primary", "folder") +
         " " +
-        btn("Volumi EFI", "go-disks")) +
-    '</div><div class="card"><div class="head"><h2>Ambiente di avvio</h2><span class="tile">' +
+        btn(t("Volumi EFI"), "go-disks")) +
+    ('</div><div class="card"><div class="head"><h2>' +
+      t("Ambiente di avvio") +
+      '</h2><span class="tile">') +
     icon("chip") +
     "</span></div>" +
     pairs([
-      ["OpenCore attivo", s.oc],
+      [t("OpenCore attivo"), s.oc],
       ["SMBIOS", s.model],
       ["Darwin", s.kernel],
-      ["Architettura", s.arch],
+      [t("Architettura"), s.arch],
     ]) +
     "</div></div>";
 }
 function disks() {
   return (
     '<div class="actions">' +
-    btn("Aggiorna dischi", "refresh", "", "reload") +
+    btn(t("Aggiorna dischi"), "refresh", "", "reload") +
     '</div><div class="table">' +
     (st.disks
       .map(
@@ -333,18 +380,21 @@ function disks() {
           " GB" +
           (d.mount ? " · " + esc(d.mount) : "") +
           "</small></div>" +
-          tag(d.mount ? "Montata" : "Smontata", !d.mount) +
+          tag(d.mount ? t("Montata") : t("Smontata"), !d.mount) +
           (d.mount
-            ? btn("Apri EFI", "volume-" + i) + btn("Smonta", "unmount-" + i)
-            : btn("Monta", "mount-" + i, "primary")) +
+            ? btn(t("Apri EFI"), "volume-" + i) +
+              btn(t("Smonta"), "unmount-" + i)
+            : btn(t("Monta"), "mount-" + i, "primary")) +
           "</div>",
       )
       .join("") ||
-      '<div class="empty">Nessuna partizione EFI rilevata.</div>') +
+      '<div class="empty">' +
+        t("Nessuna partizione EFI rilevata.") +
+        "</div>") +
     "</div>" +
     (st.w
       ? '<div class="actions">' +
-        btn("Chiudi configurazione", "close") +
+        btn(t("Chiudi configurazione"), "close") +
         "</div>"
       : "")
   );
@@ -362,17 +412,21 @@ const categories = {
 };
 function systemPanel(s) {
   return (
-    '<div class="card"><h2>Hardware e avvio</h2>' +
+    '<div class="card"><h2>' +
+    t("Hardware e avvio") +
+    "</h2>" +
     pairs([
       ["CPU", s.cpu],
-      ["Core / thread", s.cores + " / " + s.threads],
-      ["Memoria", s.ram == null ? "" : s.ram + " GiB"],
-      ["Modello SMBIOS", s.model],
-      ["Versione OpenCore (NVRAM)", s.oc],
+      [t("Core / thread"), s.cores + " / " + s.threads],
+      [t("Memoria"), s.ram == null ? "" : s.ram + " GiB"],
+      [t("Modello SMBIOS"), s.model],
+      [t("Versione OpenCore (NVRAM)"), s.oc],
       ["Boot arguments", s.boot],
-      ["Build macOS", s.build],
+      [t("Build macOS"), s.build],
     ]) +
-    '</div><div class="actions"><label for="category">Report macOS</label><select id="category">' +
+    ('</div><div class="actions"><label for="category">' +
+      t("Report macOS") +
+      '</label><select id="category">') +
     Object.entries(categories)
       .map(
         ([k, v]) =>
@@ -381,11 +435,11 @@ function systemPanel(s) {
           '" ' +
           (st.category === k ? "selected" : "") +
           ">" +
-          v +
+          t(v) +
           "</option>",
       )
       .join("") +
-    '<optgroup label="Tutti i report di system_profiler">' +
+    ('<optgroup label="' + t("Tutti i report di system_profiler") + '">') +
     (s.reports || [])
       .map(
         (k) =>
@@ -399,21 +453,41 @@ function systemPanel(s) {
       )
       .join("") +
     "</optgroup></select>" +
-    btn("Leggi report", "report", "", "terminal") +
+    btn(t("Leggi report"), "report", "", "terminal") +
     "</div>" +
-    (st.report ? codeText(st.report) : "")
+    (st.report ? codeText(st.report) : "") +
+    '<section class="card"><h2>' +
+    t("Log di avvio e kernel panic") +
+    "</h2>" +
+    btn(t("Leggi log"), "logs") +
+    (st.logs || [])
+      .map(
+        (l) =>
+          "<details><summary>" +
+          esc(l.path) +
+          '</summary><pre class="warnings">' +
+          esc(l.highlights.join("\n")) +
+          "</pre>" +
+          codeText(l.text) +
+          "</details>",
+      )
+      .join("") +
+    "</section>"
   );
 }
 function config() {
   return (
     '<div class="actions">' +
-    btn("Campi", "fields") +
+    btn(t("Campi"), "fields") +
     btn("XML", "xml") +
-    btn("Verifica", "verify", "", "shield") +
-    btn("Salva plist", "save", "primary", "save") +
+    btn(t("Verifica"), "verify", "", "shield") +
+    btn(t("Mostra modifiche"), "diff") +
+    btn(t("Salva plist"), "save", "primary", "save") +
     "</div>" +
     (st.mode === "xml"
-      ? '<label for="xml" class="label">Sorgente XML</label><textarea spellcheck="false" autocapitalize="off" id="xml"></textarea>'
+      ? '<label for="xml" class="label">' +
+        t("Sorgente XML") +
+        '</label><textarea spellcheck="false" autocapitalize="off" id="xml"></textarea>'
       : '<div class="filters" id="sections"></div><div class="card tree" id="tree"></div>')
   );
 }
@@ -434,14 +508,15 @@ function buildTree() {
   const tree = $("#tree");
   const node = get(root(), st.section);
   if (!node) {
-    tree.textContent = "Dizionario vuoto. Aggiungi chiavi nella vista XML.";
+    tree.textContent = t("Dizionario vuoto. Aggiungi chiavi nella vista XML.");
     return;
   }
-  function append(parent, label, n, depth) {
+  function append(parent, label, n, depth, path) {
     const type = n.tagName;
     if (type === "dict" || type === "array") {
       const wrap = document.createElement("details");
-      wrap.open = depth === 0;
+      wrap.open =
+        depth === 0 || path.every((part, i) => st.focusPath?.[i] === part);
       const summary = document.createElement("summary");
       const children =
         type === "dict"
@@ -450,8 +525,13 @@ function buildTree() {
       summary.textContent = label + " · " + children.length;
       wrap.append(summary);
       parent.append(wrap);
+      markField(summary, path);
       const fill = () => {
-        for (const [k, v] of children) append(wrap, k, v, depth + 1);
+        for (const [k, v] of children)
+          append(wrap, k, v, depth + 1, [
+            ...path,
+            type === "array" ? Number(k.slice(1, -1)) : k,
+          ]);
       };
       if (wrap.open) fill();
       else
@@ -483,9 +563,27 @@ function buildTree() {
       });
       row.append(name, input);
       parent.append(row);
+      markField(input, path);
+      if (["MinKernel", "MaxKernel"].includes(label) && type === "string") {
+        row.after(
+          kernelSelect(label, n.textContent, (v) => {
+            input.value = v;
+            input.dispatchEvent(new Event("input"));
+          }),
+        );
+      }
     }
   }
-  append(tree, st.section, node, 0);
+  if (st.section === "PlatformInfo" && get(node, "Generic")) {
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    actions.innerHTML =
+      btn(t("Verifica SMBIOS"), "smbios") +
+      btn(t("Genera seriale, MLB e UUID"), "generate");
+    tree.append(actions);
+  }
+  append(tree, st.section, node, 0, [st.section]);
+  st.focusPath = null;
 }
 function listNode() {
   const [section, key] = groups[st.group];
@@ -502,13 +600,15 @@ function inventoryRows() {
       path,
       index,
       n,
-      file: physical.find((f) => f.path === path),
+      file: physical.find((f) => pathKey(f.path) === pathKey(path)),
       enabled: n.tagName === "string" || get(n, "Enabled")?.tagName === "true",
     };
   });
   return configured.concat(
     physical
-      .filter((f) => !configured.some((c) => c.path === f.path))
+      .filter(
+        (f) => !configured.some((c) => pathKey(c.path) === pathKey(f.path)),
+      )
       .map((file) => ({ path: file.path, file })),
   );
 }
@@ -535,10 +635,15 @@ function filePanel() {
   return (
     groupControls() +
     '<div class="actions">' +
-    (st.group === "Kexts" ? btn("Copia un kext…", "import", "", "box") : "") +
-    btn("Rileggi file", "inventory", "", "reload") +
-    btn("Apri nel Finder", "finder") +
-    btn("Salva plist", "save", "primary", "save") +
+    (st.group === "Kexts"
+      ? btn(t("Copia un kext…"), "import", "", "box")
+      : "") +
+    (st.group === "Kexts" ? btn(t("Ordina per dipendenze"), "sort") : "") +
+    btn(t("Sincronizza cartelle EFI"), "snapshot") +
+    btn(t("Rileggi file"), "inventory", "", "reload") +
+    btn(t("Apri nel Finder"), "finder") +
+    btn(t("Mostra modifiche"), "diff") +
+    btn(t("Salva plist"), "save", "primary", "save") +
     '</div><div class="table">' +
     (rows
       .map((r, i) => {
@@ -557,24 +662,24 @@ function filePanel() {
                 return [
                   dep +
                     (providers.some((p) => p.enabled)
-                      ? " segue questo kext"
-                      : " non attivo"),
+                      ? t(" segue questo kext")
+                      : t(" non attivo")),
                 ];
               })
             : [];
         const detail = [
           r.file?.version,
           r.file?.id,
-          r.file?.bytes != null ? r.file.bytes + " byte" : "",
+          r.file?.bytes != null ? r.file.bytes + t(" byte") : "",
           r.file?.dependencies?.length
-            ? "Richiede: " + r.file.dependencies.join(", ")
+            ? t("Richiede: ") + r.file.dependencies.join(", ")
             : "",
         ]
           .filter(Boolean)
           .join(" · ");
         return (
           '<div class="row"><div class="entry"><strong>' +
-          esc(r.path || "(percorso vuoto)") +
+          esc(r.path || t("(percorso vuoto)")) +
           "</strong><small>" +
           esc(detail) +
           "</small>" +
@@ -584,20 +689,25 @@ function filePanel() {
               "</small>"
             : "") +
           "</div>" +
+          (configured && st.group === "Kexts"
+            ? '<details><summary>Kernel</summary><div data-range="' +
+              i +
+              '"></div></details>'
+            : "") +
           tag(
             !r.file
-              ? "File assente"
+              ? t("File assente")
               : !configured
-                ? "Solo su disco"
+                ? t("Solo su disco")
                 : r.enabled
-                  ? "Attivo"
-                  : "Disattivato",
+                  ? t("Attivo")
+                  : t("Disattivato"),
             !r.file || !configured,
           ) +
           (configured
             ? (get(r.n, "Enabled")
                 ? btn(
-                    r.enabled ? "Disattiva" : "Attiva",
+                    r.enabled ? t("Disattiva") : t("Attiva"),
                     "toggle-" + i,
                     "compact",
                   )
@@ -606,17 +716,56 @@ function filePanel() {
               (i + 1 < listNode().children.length
                 ? btn("↓", "down-" + i, "compact")
                 : "") +
-              btn("Rimuovi voce", "remove-" + i, "compact")
+              btn(t("Rimuovi voce"), "remove-" + i, "compact")
             : r.file.valid !== false
-              ? btn("Registra", "add-" + i, "compact")
-              : "Bundle incompleto") +
+              ? btn(t("Registra"), "add-" + i, "compact")
+              : t("Bundle incompleto")) +
           "</div>"
         );
       })
       .join("") ||
-      '<div class="empty">Nessuna voce in questa categoria.</div>') +
+      '<div class="empty">' +
+        t("Nessuna voce in questa categoria.") +
+        "</div>") +
     "</div>"
   );
+}
+function componentEntry(doc, group, r) {
+  let fields = { Comment: "", Enabled: false, Path: r.path };
+  if (group === "Kexts")
+    fields = {
+      Arch: "Any",
+      BundlePath: r.path,
+      Comment: "",
+      Enabled: false,
+      ExecutablePath: r.file.executable,
+      MaxKernel: "",
+      MinKernel: "",
+      PlistPath: "Contents/Info.plist",
+    };
+  if (group === "Drivers")
+    Object.assign(fields, {
+      Arguments: "",
+      LoadEarly: false,
+      HideVerbose: false,
+    });
+  if (group === "Tools")
+    Object.assign(fields, {
+      Arguments: "",
+      Auxiliary: true,
+      Flavour: "Auto",
+      FullNvramAccess: false,
+      Name: r.path.split("/").pop(),
+      RealPath: false,
+      TextMode: false,
+    });
+  const dict = doc.createElement("dict");
+  for (const [k, v] of Object.entries(fields)) {
+    const key = doc.createElement("key");
+    key.textContent = k;
+    dict.append(key, typed(doc, v));
+  }
+  return dict;
 }
 function changeEntry(op, i) {
   const r = inventoryRows()[i],
@@ -625,50 +774,16 @@ function changeEntry(op, i) {
     throw Error(
       "Array " +
         groups[st.group].slice(0, 2).join(" → ") +
-        " assente. Aggiungilo nella vista XML.",
+        t(" assente. Aggiungilo nella vista XML."),
     );
   if (op === "add") {
-    let fields = { Comment: "", Enabled: false, Path: r.path };
-    if (st.group === "Kexts")
-      fields = {
-        Arch: "Any",
-        BundlePath: r.path,
-        Comment: "",
-        Enabled: false,
-        ExecutablePath: r.file.executable,
-        MaxKernel: "",
-        MinKernel: "",
-        PlistPath: "Contents/Info.plist",
-      };
-    if (st.group === "Drivers")
-      Object.assign(fields, {
-        Arguments: "",
-        LoadEarly: false,
-        HideVerbose: false,
-      });
-    if (st.group === "Tools")
-      Object.assign(fields, {
-        Arguments: "",
-        Auxiliary: true,
-        Flavour: "Auto",
-        FullNvramAccess: false,
-        Name: r.path.split("/").pop(),
-        RealPath: false,
-        TextMode: false,
-      });
-    const dict = st.doc.createElement("dict");
-    for (const [k, v] of Object.entries(fields)) {
-      const key = st.doc.createElement("key");
-      key.textContent = k;
-      dict.append(key, typed(st.doc, v));
-    }
-    list.append(dict);
+    list.append(componentEntry(st.doc, st.group, r));
   } else if (op === "remove") {
     if (
       !confirm(
-        "Rimuovere dal plist la voce " +
+        t("Rimuovere dal plist la voce ") +
           r.path +
-          "? Il file resterà sul disco.",
+          t("? Il file resterà sul disco."),
       )
     )
       return;
@@ -682,28 +797,52 @@ function changeEntry(op, i) {
 }
 function validation() {
   return (
-    '<div class="pair"><div class="card"><div class="head"><h2>Controllo configurazione</h2>' +
+    '<div class="pair"><div class="card"><div class="head"><h2>' +
+    t("Controllo configurazione") +
+    "</h2>" +
     tag("ocvalidate 1.0.8") +
-    "</div><p>Analizza la bozza con le regole di OpenCore 1.0.8. Per altre versioni il risultato può differire.</p>" +
-    btn("Verifica bozza", "verify", "primary", "shield") +
-    '</div><div class="card"><h2>Archivio di ripristino</h2><p>Crea uno ZIP della cartella EFI su disco, oppure della sola OC se aperta separatamente.</p>' +
-    btn("Crea backup ZIP", "backup", "", "box") +
+    ("</div><p>" +
+      t(
+        "Analizza la bozza con le regole di OpenCore 1.0.8. Per altre versioni il risultato può differire.",
+      ) +
+      "</p>") +
+    btn(t("Verifica bozza"), "verify", "primary", "shield") +
+    ('</div><div class="card"><h2>' +
+      t("Archivio di ripristino") +
+      "</h2><p>" +
+      t(
+        "Crea uno ZIP della cartella EFI su disco, oppure della sola OC se aperta separatamente.",
+      ) +
+      "</p>") +
+    btn(t("Controlla aggiornamenti OpenCore"), "checkUpdate") +
+    btn(t("Esporta config anonimizzato"), "export") +
+    btn(t("Crea backup ZIP"), "backup", "", "box") +
     " " +
-    btn("Mostra backup", "backups") +
+    btn(t("Mostra backup"), "backups") +
     "</div></div>" +
     (st.validation
       ? '<div class="actions">' +
         tag(
-          st.validation.pass ? "Verifica superata" : "Anomalie rilevate",
+          st.validation.pass ? t("Verifica superata") : t("Anomalie rilevate"),
           !st.validation.pass,
         ) +
         "</div>" +
-        codeText(st.validation.log)
+        diagnosticsView(st.validation)
       : "")
   );
 }
 async function act(a) {
   notice("");
+  if (a.startsWith("jump-")) {
+    const target = st.links[Number(a.slice(5))];
+    st.doc = parse(st.xml);
+    st.focusPath = target;
+    st.section = target[0];
+    st.page = "config";
+    st.mode = "fields";
+    draw();
+    return;
+  }
   if (a.startsWith("go-")) {
     st.page = a.slice(3);
     draw();
@@ -721,7 +860,7 @@ async function act(a) {
       openData(w);
     } else if (op === "mount" || op === "unmount") {
       st.disks = await rpc(op, { uuid: st.disks[i].uuid, id: st.disks[i].id });
-      notice(op === "mount" ? "EFI montata." : "EFI smontata.");
+      notice(op === "mount" ? t("EFI montata.") : t("EFI smontata."));
     } else {
       changeEntry(op, i);
       return;
@@ -739,7 +878,13 @@ async function act(a) {
       case "close":
         if (!discard()) return;
         await rpc("close");
-        Object.assign(st, { w: null, xml: "", original: "", doc: null });
+        Object.assign(st, {
+          logs: null,
+          w: null,
+          xml: "",
+          original: "",
+          doc: null,
+        });
         dirty();
         break;
       case "refresh":
@@ -748,7 +893,7 @@ async function act(a) {
       case "report":
         st.report =
           (await rpc("report", { category: st.category })) ||
-          "Nessun dato restituito da macOS.";
+          t("Nessun dato restituito da macOS.");
         break;
       case "fields":
         st.doc = parse(st.xml);
@@ -756,6 +901,85 @@ async function act(a) {
         break;
       case "xml":
         st.mode = "xml";
+        break;
+      case "logs":
+        st.logs = await rpc("logs");
+        if (!st.logs.length) notice(t("Nessun log disponibile"));
+        break;
+      case "checkUpdate": {
+        const update = await rpc("checkUpdate");
+        const text = [
+          "OpenCore " + update.version,
+          "SHA-256 · " + update.digest,
+          ...update.paths,
+          t(
+            update.paths.length
+              ? "Backup ZIP completo prima della sostituzione."
+              : "Nessuna modifica",
+          ),
+        ].join("\n");
+        if (
+          await preview(
+            t("Aggiornamento binari OpenCore"),
+            text,
+            update.paths.length ? t("Aggiorna binari") : null,
+          )
+        )
+          notice(t("Backup ZIP creato in ") + (await rpc("applyUpdate")));
+        break;
+      }
+      case "diff": {
+        const d = await rpc("diff", { xml: st.xml });
+        await preview(
+          t("Mostra modifiche"),
+          [...d.paths, d.xml].filter(Boolean).join("\n") ||
+            t("Nessuna modifica"),
+        );
+        break;
+      }
+      case "export": {
+        const path = await rpc("export", { xml: st.xml });
+        if (path) notice(t("Copia esportata") + " · " + path);
+        break;
+      }
+      case "smbios":
+      case "generate": {
+        const result = await rpc(a, { xml: st.xml });
+        if (a === "smbios")
+          await preview(
+            t("Verifica SMBIOS"),
+            [
+              "SystemSerialNumber · " +
+                t(result.serial ? "Coerente" : "Da verificare"),
+              "MLB · " + t(result.board ? "Coerente" : "Da verificare"),
+            ].join("\n"),
+          );
+        else if (
+          await preview(
+            t("Genera seriale, MLB e UUID"),
+            Object.entries(result)
+              .map(([k, v]) => k + " · " + v)
+              .join("\n"),
+            t("Applica alla bozza"),
+          )
+        ) {
+          const g = get(get(root(), "PlatformInfo"), "Generic");
+          for (const [k, v] of Object.entries(result)) {
+            const n = get(g, k);
+            if (n) n.replaceWith(typed(st.doc, v));
+            else {
+              const key = st.doc.createElement("key");
+              key.textContent = k;
+              g.append(key, typed(st.doc, v));
+            }
+          }
+          sync();
+        }
+        break;
+      }
+      case "sort":
+      case "snapshot":
+        await snapshot(a === "snapshot");
         break;
       case "inventory":
         st.w.inventory = await rpc("inventory");
@@ -769,19 +993,35 @@ async function act(a) {
         if (data) {
           st.w.inventory = data;
           notice(
-            "Bundle copiato. Registra e attiva le voci desiderate, poi salva il plist.",
+            t(
+              "Bundle copiato. Registra e attiva le voci desiderate, poi salva il plist.",
+            ),
           );
         }
         break;
       }
       case "backup":
-        notice("Backup ZIP creato in " + (await rpc("backup")));
+        notice(t("Backup ZIP creato in ") + (await rpc("backup")));
         break;
       case "verify":
         st.validation = await rpc("validate", { xml: st.xml });
         st.page = "validate";
         break;
+      case "finish":
       case "save": {
+        const disk = a === "finish" ? selectedDisk() : null;
+        if (
+          a === "finish" &&
+          (!disk ||
+            !confirm(
+              t(
+                disk.ejectable
+                  ? "Salvare, smontare ed espellere il disco esterno?"
+                  : "Salvare e smontare la EFI interna?",
+              ),
+            ))
+        )
+          return;
         const doc = parse(st.xml);
         const check = await rpc("validate", { xml: st.xml });
         if (!check.pass) {
@@ -790,16 +1030,35 @@ async function act(a) {
           draw();
           if (
             !confirm(
-              "ocvalidate 1.0.8 segnala anomalie. Salvare comunque questa configurazione?",
+              t(
+                "ocvalidate 1.0.8 segnala anomalie. Salvare comunque questa configurazione?",
+              ),
             )
           )
             return;
         }
-        const backup = await rpc("save", { xml: st.xml });
+        const backup = st.dirty ? await rpc("save", { xml: st.xml }) : null;
         st.doc = doc;
         st.original = st.xml;
         dirty();
-        notice("Configurazione salvata. Copia precedente in " + backup);
+        if (backup)
+          notice(t("Configurazione salvata. Copia precedente in ") + backup);
+        if (disk) {
+          const result = await rpc("finish", { id: disk.id, uuid: disk.uuid });
+          st.disks = result.disks;
+          Object.assign(st, {
+            w: null,
+            xml: "",
+            original: "",
+            doc: null,
+            logs: null,
+          });
+          dirty();
+          notice(
+            t("EFI smontata.") + (result.warning ? " · " + result.warning : ""),
+            !!result.warning,
+          );
+        }
         break;
       }
     }
@@ -829,6 +1088,15 @@ document.addEventListener("input", (e) => {
   }
 });
 document.addEventListener("change", (e) => {
+  if (e.target.id === "language") {
+    const lang = e.target.value;
+    work(async () => {
+      languageUI(await rpc("language", { value: lang }));
+      notice("");
+      draw();
+    });
+    return;
+  }
   if (e.target.id === "category") {
     st.category = e.target.value;
     st.report = "";
@@ -842,6 +1110,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 work(async () => {
+  languageUI(await rpc("language"));
   st.system = await rpc("system");
   try {
     st.disks = await rpc("disks");

@@ -105,12 +105,30 @@ pub fn disks() -> Result<Value> {
                         .and_then(|d| d.get(k))
                         .and_then(P::as_string)
                 };
-                rows.push(json!({"model":meta("MediaName"),"bus":meta("BusProtocol"),"uuid":val("DiskUUID"),"id":val("DeviceIdentifier"),"name":val("VolumeName"),"mount":val("MountPoint"),
+                let ejectable = info.as_ref().is_some_and(can_eject);
+                rows.push(json!({"ejectable":ejectable,"model":meta("MediaName"),"bus":meta("BusProtocol"),"uuid":val("DiskUUID"),"id":val("DeviceIdentifier"),"name":val("VolumeName"),"mount":val("MountPoint"),
                 "size":p.get("Size").and_then(P::as_unsigned_integer),"disk":disk.get("DeviceIdentifier").and_then(P::as_string)}));
             }
         }
     }
     Ok(json!(rows))
+}
+fn can_eject(info: &P) -> bool {
+    let get = |k| {
+        info.as_dictionary()
+            .and_then(|d| d.get(k))
+            .and_then(P::as_boolean)
+    };
+    get("Internal") == Some(false)
+        && (get("Ejectable") == Some(true) || get("RemovableMediaOrExternalDevice") == Some(true))
+}
+#[test]
+fn only_external_media_can_eject() {
+    for (internal, expect) in [("true", false), ("false", true)] {
+        let p=P::from_reader_xml(format!("<plist><dict><key>Internal</key><{internal}/><key>Ejectable</key><true/></dict></plist>").as_bytes()).unwrap();
+        assert_eq!(can_eject(&p), expect);
+    }
+    assert!(!can_eject(&P::Dictionary(Default::default())));
 }
 fn disk_id(id: &str) -> bool {
     id.strip_prefix("disk")

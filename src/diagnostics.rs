@@ -1,0 +1,193 @@
+use anyhow::Result;
+use plist::Value as P;
+use serde_json::{Value, json};
+use std::collections::HashMap;
+pub fn field<'a>(p: &'a P, k: &str) -> Option<&'a P> {
+    p.as_dictionary()?.get(k)
+}
+pub fn string<'a>(p: &'a P, k: &str) -> &'a str {
+    field(p, k).and_then(P::as_string).unwrap_or("")
+}
+fn version(v: &str) -> [u32; 3] {
+    let mut out = [0; 3];
+    for (n, s) in out.iter_mut().zip(v.split('.')) {
+        *n = s.parse().unwrap_or(0);
+    }
+    out
+}
+fn active(p: &P, host: &Value) -> bool {
+    let kernel = host["kernel"].as_str().unwrap_or("");
+    field(p, "Enabled").and_then(P::as_boolean) == Some(true)
+        && (string(p, "MinKernel").is_empty() || version(kernel) >= version(string(p, "MinKernel")))
+        && (string(p, "MaxKernel").is_empty() || version(kernel) <= version(string(p, "MaxKernel")))
+        && (matches!(string(p, "Arch"), "" | "Any")
+            || Some(string(p, "Arch")) == host["arch"].as_str())
+}
+pub fn lint(text: &str, inventory: &Value, host: &Value) -> Result<Vec<Value>> {
+    let root = P::from_reader_xml(text.as_bytes())?;
+    let mut findings = Vec::new();
+    let mut issue = |kind: &str, path: Value, details: Value| {
+        findings.push(json!({"kind":kind,"path":path,"details":details}))
+    };
+    let array = |k| {
+        field(&root, "Kernel")
+            .and_then(|p| field(p, k))
+            .and_then(P::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+    };
+    if host["cpu"]
+        .as_str()
+        .unwrap_or("")
+        .to_uppercase()
+        .contains("AMD")
+        && let Some(cores) = host["cores"]
+            .as_str()
+            .and_then(|v| v.parse::<u8>().ok())
+            .filter(|n| *n > 0)
+    {
+        for (i, p) in array("Patch") {
+            if field(p, "Enabled").and_then(P::as_boolean) != Some(true) {
+                continue;
+            }
+            let find = field(p, "Find").and_then(P::as_data).unwrap_or(&[]);
+            if !(string(p, "Comment")
+                .to_lowercase()
+                .contains("cpuid_cores_per_package")
+                || string(p, "Base") == "_cpuid_set_info"
+                    && matches!(find, [0xc1, 0xe8, 0x1a, 0, 0] | [0xc1, 0xe8, 0x1a, 0, 0, 0]))
+            {
+                continue;
+            }
+            let replace = field(p, "Replace").and_then(P::as_data).unwrap_or(&[]);
+            let path = json!(["Kernel", "Patch", i, "Replace"]);
+            match replace {
+                [0xb8 | 0xba, count, 0, 0, 0] | [0xb8 | 0xba, count, 0, 0, 0, 0 | 0x90]
+                    if *count != cores =>
+                {
+                    issue("cores", path, json!([count, cores]))
+                }
+                [0xb8 | 0xba, _, 0, 0, 0] | [0xb8 | 0xba, _, 0, 0, 0, 0 | 0x90] => (),
+                _ => issue("pattern", path, json!([])),
+            }
+        }
+    }
+    let files = inventory["Kexts"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let enabled: Vec<_> = array("Add")
+        .filter(|(_, p)| active(p, host))
+        .map(|(i, p)| {
+            let path = string(p, "BundlePath");
+            let file = files.iter().find(|f| {
+                f["path"]
+                    .as_str()
+                    .is_some_and(|s| crate::graph::normalized(s) == crate::graph::normalized(path))
+            });
+            (i, path, file)
+        })
+        .collect();
+    let mut ids = HashMap::new();
+    for (i, path, file) in &enabled {
+        let target = json!(["Kernel", "Add", i, "BundlePath"]);
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let id = file.and_then(|f| f["id"].as_str()).unwrap_or(name);
+        if let Some(prev) = ids.insert(id, *path) {
+            issue("duplicate", target.clone(), json!([prev, path]));
+        }
+        if let Some(other) = match name {
+            "SMCBatteryManager.kext" => Some("ACPIBatteryManager.kext"),
+            "AirportItlwm.kext" => Some("itlwm.kext"),
+            _ => None,
+        } && enabled
+            .iter()
+            .any(|(_, p, _)| p.rsplit('/').next() == Some(other))
+        {
+            issue("conflict", target.clone(), json!([path, other]));
+        }
+        for dep in file
+            .and_then(|f| f["dependencies"].as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let Some((j, provider, _)) = enabled
+                .iter()
+                .find(|(_, _, f)| f.is_some_and(|f| &f["id"] == dep))
+                && j > i
+            {
+                issue("order", target.clone(), json!([path, provider]));
+            }
+        }
+    }
+    let mut drivers = Vec::new();
+    for (i, p) in field(&root, "UEFI")
+        .and_then(|v| field(v, "Drivers"))
+        .and_then(P::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if field(p, "Enabled").and_then(P::as_boolean) == Some(true) || p.as_string().is_some() {
+            drivers.push((i, p.as_string().unwrap_or_else(|| string(p, "Path"))));
+        }
+    }
+    for (a, b) in [
+        ("HfsPlus.efi", "OpenHfsPlus.efi"),
+        ("VBoxHfs.efi", "HfsPlus.efi"),
+        ("VBoxHfs.efi", "OpenHfsPlus.efi"),
+    ] {
+        if let Some((i, _)) = drivers
+            .iter()
+            .find(|(_, p)| p.rsplit('/').next() == Some(a))
+            && drivers.iter().any(|(_, p)| p.rsplit('/').next() == Some(b))
+        {
+            issue("conflict", json!(["UEFI", "Drivers", i]), json!([a, b]));
+        }
+    }
+    let model = field(&root, "PlatformInfo")
+        .and_then(|p| field(p, "Generic"))
+        .map(|p| string(p, "SystemProductName"))
+        .unwrap_or("");
+    if !model.is_empty()
+        && host["model"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && s != model)
+    {
+        issue(
+            "model",
+            json!(["PlatformInfo", "Generic", "SystemProductName"]),
+            json!([model, host["model"]]),
+        );
+    }
+    Ok(findings)
+}
+#[test]
+fn amd_count_and_conflicts() {
+    let xml = "<plist><dict><key>Kernel</key><dict><key>Patch</key><array><dict><key>Enabled</key><true/><key>Comment</key><string>cpuid_cores_per_package</string><key>Replace</key><data>ugQAAAA=</data></dict></array><key>Add</key><array><dict><key>Enabled</key><true/><key>BundlePath</key><string>itlwm.kext</string></dict><dict><key>Enabled</key><true/><key>BundlePath</key><string>AirportItlwm.kext</string></dict></array></dict></dict></plist>";
+    let mut host = json!({"cpu":"AMD Ryzen","cores":"6","kernel":"25.0.0"});
+    let findings = lint(xml, &Value::Null, &host).unwrap();
+    assert_eq!(findings.len(), 2);
+    assert_eq!(findings[0]["details"], json!([4, 6]));
+    host["cpu"] = json!("Intel");
+    assert_eq!(lint(xml, &Value::Null, &host).unwrap().len(), 1);
+}
+
+#[test]
+fn disabled_and_out_of_range_kexts_do_not_conflict() {
+    let host = json!({"kernel":"25.1.0","arch":"x86_64"});
+    for (extra, expected) in [
+        ("", true),
+        ("<key>MaxKernel</key><string>24.99.99</string>", false),
+        ("<key>MinKernel</key><string>26.0.0</string>", false),
+        ("<key>Arch</key><string>i386</string>", false),
+    ] {
+        let node = P::from_reader_xml(
+            format!("<plist><dict><key>Enabled</key><true/>{extra}</dict></plist>").as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(active(&node, &host), expected);
+    }
+    assert!(!active(&P::Dictionary(Default::default()), &host));
+}
