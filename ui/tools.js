@@ -36,8 +36,9 @@ function preview(title, text, apply) {
     const heading = document.createElement("h2");
     heading.id = "preview-title";
     heading.textContent = t(title);
-    const pre = document.createElement("pre");
-    pre.textContent = text;
+    const pre = document.createElement(text instanceof Node ? "div" : "pre");
+    if (text instanceof Node) pre.append(text);
+    else pre.textContent = text;
     const controls = document.createElement("div");
     controls.className = "actions";
     const previous = document.activeElement;
@@ -59,6 +60,7 @@ function preview(title, text, apply) {
     overlay.append(box);
     document.body.append(overlay);
     cancel.focus();
+    const first=box.querySelector("input:enabled, button:enabled");
     overlay.onkeydown = (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -66,11 +68,11 @@ function preview(title, text, apply) {
       }
       if (
         e.key === "Tab" &&
-        ((e.shiftKey && document.activeElement === cancel) ||
+        ((e.shiftKey && document.activeElement === first) ||
           (!e.shiftKey && document.activeElement === last))
       ) {
         e.preventDefault();
-        (e.shiftKey ? last : cancel).focus();
+        (e.shiftKey ? last : first).focus();
       }
     };
   });
@@ -228,14 +230,6 @@ function diagnosticsView(result) {
       ? esc(line) + " " + link(common, common.join(" → "))
       : esc(line);
   });
-  const labels = {
-    cores: "Core fisici diversi dal byte Replace",
-    pattern: "Formato patch non riconosciuto",
-    conflict: "Conflitto",
-    duplicate: "Bundle duplicato",
-    order: "Caricato prima della dipendenza",
-    model: "Modello configurato e modello del Mac",
-  };
   return (
     '<div class="pair"><div class="card"><h2>ocvalidate</h2><pre>' +
     lines.join("\n") +
@@ -244,13 +238,16 @@ function diagnosticsView(result) {
     "</h2>" +
     ((result.issues || [])
       .map(
-        (i) =>
+        (i, index) =>
           "<p>" +
-          esc(t(labels[i.kind])) +
+          esc(t(i.label)) +
           " · " +
           esc(i.details.join(" → ")) +
           " " +
           link(i.path, i.path.join(" → ")) +
+          (i.kind === "usbModel"
+            ? btn(t("Allinea SMBIOS nel kext"), "usbFix-" + index)
+            : "") +
           "</p>",
       )
       .join("") || esc(t("Nessuna segnalazione"))) +

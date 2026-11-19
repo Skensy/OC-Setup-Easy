@@ -14,7 +14,7 @@ Download the Universal app ZIP for Intel and Apple Silicon from [GitHub Releases
 
 ## Edit your first configuration
 
-OC Setup Easy 0.2.0 supports English and Italian. Use the language selector at the bottom of the sidebar to switch without closing your draft. The app remembers your choice. The steps below use the Italian button labels.
+OC Setup Easy 0.3.0 supports English and Italian. Use the language selector at the bottom of the sidebar to switch without closing your draft. The app remembers your choice. The steps below use the Italian button labels.
 
 1. Open **Volumi EFI** (EFI volumes). Identify your disk by its model, connection, and device identifier. Click **Monta** to mount it, then **Apri EFI** to open it. To work on a copy, use **Apri cartella EFI** and select the volume, the EFI folder, or the OC folder containing `config.plist`.
 2. Open **Verifica e backup** (validation and backup) and create a ZIP before making changes. When OC sits inside EFI, the archive includes the entire EFI folder. Opening a standalone OC folder backs up that folder.
@@ -37,10 +37,34 @@ OC Setup Easy 0.2.0 supports English and Italian. Use the language selector at t
 - Use **Sort by dependencies** or **Sync EFI folders** to preview kext order, additions, and orphaned entries. Applying the preview changes the draft. When a cycle prevents sorting, the preview lists its members and preserves the current order.
 - Use the Darwin version presets alongside MinKernel and MaxKernel, or enter a custom value in the plist editor.
 - **Validate draft** shows schema output and hardware diagnostics side by side. Click a reported location to open the corresponding field or the closest identifiable section.
-- **Show changes** compares the current on-disk plist with the draft by path and XML. **Export anonymized config** writes a separate copy with the serial, MLB, UUID and ROM fields in PlatformInfo masked. Other custom keys and NVRAM entries may contain identifying data.
+- **Show changes** compares the current on-disk plist with the draft by path and XML. **Export anonymized config** writes a separate copy with recognized serial, MLB, UUID and ROM fields masked, including their common NVRAM aliases. Custom keys and free-form text may still contain identifying data.
 - In **PlatformInfo**, check the serial and MLB against the configured model or generate a new serial, MLB and UUID with macserial. The checks run locally.
 - Read boot and panic logs from **Hardware and system**. The header shows mounted EFIs. With a configuration open on a mounted EFI, you can validate, save and unmount it. Ejecting an external device also unmounts its other volumes.
 - **Check for OpenCore updates** contacts the official release service on demand and checks the archive’s SHA-256. Review the changed x86-64 boot files and existing standard drivers before applying. The app verifies a full EFI backup before replacing them. Schema validation still uses the bundled 1.0.8 validator.
+
+## New in 0.3.0
+
+- Undo and redo the last 50 draft edits in the plist editor. Use ⌘Z and ⇧⌘Z outside text fields. The window shows the open document and asks whether to save when you close a modified draft.
+- Changes to EFI folders open a sync preview from the notification banner. Changes to the on-disk plist offer a reload. Hardware reports run in the background and stay in memory until refreshed.
+- In **DeviceProperties → Add**, select a detected PCI device and convert properties between unsigned 32-bit little-endian integers, UTF-8, hex and Base64. Edit boot arguments as text or tags in **NVRAM** and on the dashboard.
+- Validate the draft to find USB maps whose model differs from the configured SMBIOS. Review the affected personalities before applying the fix. The app backs up the bundle’s previous Info.plist.
+- In **Validation and backups**, compare draft keys against a local Sample.plist or the sample from a downloaded OpenCore release. The comparison includes defaults for missing keys. Kext update checks contact GitHub only on request. Select the bundles to replace. Applying requires the complete EFI/OC directory, verifies the release SHA-256, creates a full EFI ZIP and checks the backed-up files.
+
+### Command line
+
+The same executable runs as a CLI when passed a flag. Paths containing spaces can be quoted in the usual way.
+
+```sh
+oc="/Applications/OC Setup Easy.app/Contents/MacOS/oc-setup-easy"
+"$oc" --check "/path/to/EFI/OC/config.plist"
+"$oc" --sort-kexts "/path/to/EFI" --dry-run
+"$oc" --sort-kexts "/path/to/EFI"
+"$oc" --anonymize "/path/to/config.plist" "./anonymous.plist"
+"$oc" --help
+"$oc" --version
+```
+
+`--check` runs the bundled ocvalidate and semantic diagnostics. Its exit status is 0 for success (including advisory host-model differences) and 1 for an error. Sorting uses the same backup and external-change checks as saving in the editor. Anonymizing requires a new output filename.
 
 ## Backups and recovery
 

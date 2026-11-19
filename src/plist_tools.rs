@@ -61,15 +61,31 @@ pub fn diff(disk: &str, draft: &str) -> Result<Value> {
     Ok(json!({"paths":paths,"xml":String::from_utf8(res.stdout)?}))
 }
 fn redact(p: &mut P) {
+    if let Some(items) = p.as_array_mut() {
+        for item in items {
+            redact(item);
+        }
+    }
     if let Some(d) = p.as_dictionary_mut() {
         for (k, v) in d.iter_mut() {
             match k.as_str() {
-                "SystemSerialNumber" | "BoardSerialNumber" | "MLB" => *v = P::String(String::new()),
-                "SystemUUID" | "SystemUuid" if v.as_data().is_some() => *v = P::Data(vec![0; 16]),
-                "SystemUUID" | "SystemUuid" => {
+                "SystemSerialNumber" | "BoardSerialNumber" | "MLB" | "HW_MLB" | "SSN" => {
+                    *v = if v.as_data().is_some() {
+                        P::Data(Vec::new())
+                    } else {
+                        P::String(String::new())
+                    };
+                }
+                "SystemUUID" | "SystemUuid" | "system-id" if v.as_data().is_some() => {
+                    *v = P::Data(vec![0; 16])
+                }
+                "SystemUUID" | "SystemUuid" | "system-id" => {
                     *v = P::String("00000000-0000-0000-0000-000000000000".into())
                 }
-                "ROM" => *v = P::Data(vec![0; 6]),
+                "ROM" | "HW_ROM" if v.as_string().is_some() => {
+                    *v = P::String("000000000000".into())
+                }
+                "ROM" | "HW_ROM" => *v = P::Data(vec![0; 6]),
                 _ => redact(v),
             }
         }
@@ -77,13 +93,13 @@ fn redact(p: &mut P) {
 }
 pub fn export(draft: &str, path: &Path) -> Result<()> {
     let mut tree = P::from_reader_xml(draft.as_bytes())?;
-    if let Some(platform) = tree
-        .as_dictionary_mut()
-        .and_then(|p| p.get_mut("PlatformInfo"))
-    {
-        redact(platform);
-    }
-    let mut file = NamedTempFile::new_in(path.parent().context("Invalid destination")?)?;
+    redact(&mut tree);
+    let parent = path.parent().context("Invalid destination")?;
+    let mut file = NamedTempFile::new_in(if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    })?;
     tree.to_writer_xml(&mut file)?;
     file.as_file().sync_all()?;
     file.persist_noclobber(path)
@@ -91,11 +107,18 @@ pub fn export(draft: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 pub fn resource(name: &str) -> Result<PathBuf> {
-    Ok(std::env::current_exe()?
+    let path = std::env::current_exe()?
         .parent()
         .context("App bundle unavailable")?
         .join("../Resources")
-        .join(name))
+        .join(name);
+    #[cfg(debug_assertions)]
+    if !path.is_file() {
+        return Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("dist/OC Setup Easy.app/Contents/Resources")
+            .join(name));
+    }
+    Ok(path)
 }
 fn macserial(args: &[&str]) -> Result<String> {
     let res = Command::new(resource("macserial")?).args(args).output()?;
@@ -177,6 +200,20 @@ mod tests {
         )?;
         assert_eq!(d["paths"], json!(["~ /A[0]", "+ /A[1]"]));
         assert!(d["xml"].as_str().unwrap().contains("+<plist>"));
+        Ok(())
+    }
+    #[test]
+    fn export_redacts_known_nvram_identity_fields_without_changing_types() -> Result<()> {
+        let mut nvram=P::from_reader_xml(b"<dict><key>NVRAM</key><array><dict><key>HW_MLB</key><data>QUJD</data><key>HW_ROM</key><string>ABC</string><key>system-id</key><data>YQ==</data><key>boot-args</key><string>-v</string></dict></array></dict>".as_slice())?;
+        redact(&mut nvram);
+        let node = &field(&nvram, "NVRAM").unwrap().as_array().unwrap()[0];
+        assert_eq!(field(node, "HW_MLB").unwrap().as_data(), Some(&[][..]));
+        assert_eq!(string(node, "HW_ROM"), "000000000000");
+        assert_eq!(
+            field(node, "system-id").unwrap().as_data(),
+            Some(&[0; 16][..])
+        );
+        assert_eq!(string(node, "boot-args"), "-v");
         Ok(())
     }
     #[test]

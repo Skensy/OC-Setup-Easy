@@ -27,7 +27,17 @@ pub fn lint(text: &str, inventory: &Value, host: &Value) -> Result<Vec<Value>> {
     let root = P::from_reader_xml(text.as_bytes())?;
     let mut findings = Vec::new();
     let mut issue = |kind: &str, path: Value, details: Value| {
-        findings.push(json!({"kind":kind,"path":path,"details":details}))
+        let label = match kind {
+            "cores" => "Core fisici diversi dal byte Replace",
+            "pattern" => "Formato patch non riconosciuto",
+            "conflict" => "Conflitto",
+            "duplicate" => "Bundle duplicato",
+            "order" => "Caricato prima della dipendenza",
+            "model" => "Modello configurato e modello del Mac",
+            "usbModel" => "Modello SMBIOS diverso nella mappa USB",
+            _ => kind,
+        };
+        findings.push(json!({"kind":kind,"label":label,"path":path,"details":details}))
     };
     let array = |k| {
         field(&root, "Kernel")
@@ -150,6 +160,19 @@ pub fn lint(text: &str, inventory: &Value, host: &Value) -> Result<Vec<Value>> {
         .and_then(|p| field(p, "Generic"))
         .map(|p| string(p, "SystemProductName"))
         .unwrap_or("");
+    if !model.is_empty() {
+        for file in files {
+            for pair in file["usbModels"].as_array().into_iter().flatten() {
+                if pair[1] != model {
+                    issue(
+                        "usbModel",
+                        json!(["PlatformInfo", "Generic", "SystemProductName"]),
+                        json!([file["path"], pair[0], pair[1], model]),
+                    );
+                }
+            }
+        }
+    }
     if !model.is_empty()
         && host["model"]
             .as_str()

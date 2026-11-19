@@ -9,8 +9,10 @@
     />
     <title>OC Setup Easy</title>
     <link rel="stylesheet" href="style.css" />
+    <script defer src="messages.js"></script>
     <script defer src="language.js"></script>
     <script defer src="tools.js"></script>
+    <script defer src="devices.js"></script>
     <script defer src="app.js"></script>
   </head>
   <body>
@@ -30,7 +32,7 @@
       </div>
       <div class="sidefoot session">
         <span class="led"></span> <span id="local-label">Sessione locale</span>
-        <small>v0.2</small>
+        <small>v0.3</small>
       </div>
     </aside>
     <main>
@@ -42,6 +44,7 @@
         </button>
       </header>
       <div id="notice" role="status" hidden></div>
+      <div id="watched" role="status" hidden></div>
       <section id="content"></section>
     </main>
     <div id="busy" hidden role="status">Operazione in corso…</div>

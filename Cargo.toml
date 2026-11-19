@@ -1,15 +1,17 @@
 [package]
 name = "oc-setup-easy"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A local OpenCore workbench for macOS"
 
 [dependencies]
+base64 = "0.23"
 anyhow = "1"
 plist = "1"
 serde_json = "1"
 tempfile = "3"
 fs2 = "0.4"
+zip = { version = "2.4", default-features = false, features = ["deflate-miniz"] }
 
 [build-dependencies]
 cc = "1"

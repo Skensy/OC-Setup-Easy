@@ -5,7 +5,7 @@ fn main() {
         .flag("-fobjc-arc")
         .flag("-fblocks")
         .compile("window");
-    for framework in ["Cocoa", "WebKit"] {
+    for framework in ["Cocoa", "WebKit", "CoreServices", "UniformTypeIdentifiers"] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
 }

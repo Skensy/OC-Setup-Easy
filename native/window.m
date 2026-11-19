@@ -1,8 +1,19 @@
 #import <Cocoa/Cocoa.h>
+#import <CoreServices/CoreServices.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
 
 extern char *oc_request(const char *);
 extern void oc_free(char *);
+
+BOOL oc_english(void) {
+  NSString *choice = [NSUserDefaults.standardUserDefaults
+      persistentDomainForName:@"io.github.skensy.ocsetupeasy"]
+      [@"InterfaceLanguage"];
+  return choice ? [choice isEqual:@"en"]
+                : ![NSLocale.preferredLanguages.firstObject.lowercaseString
+                      hasPrefix:@"it"];
+}
 
 @interface App : NSObject <NSApplicationDelegate, NSWindowDelegate,
                            WKScriptMessageHandlerWithReply,
@@ -11,11 +22,88 @@ extern void oc_free(char *);
 @property(strong) WKWebView *view;
 @property(strong) NSURL *page;
 @property BOOL dirty;
-@property BOOL working;
+@property BOOL closing;
+@property BOOL editingTask;
+@property NSUInteger pending;
+@property(strong) dispatch_queue_t requests;
+@property FSEventStreamRef stream;
+@property(copy) NSString *root;
+- (void)changedPaths:(NSArray *)paths
+               flags:(const FSEventStreamEventFlags *)flags;
+
 @property BOOL english;
 @end
 
+static void fileEvents(ConstFSEventStreamRef stream, void *context,
+                       size_t count, void *paths,
+                       const FSEventStreamEventFlags flags[],
+                       const FSEventStreamEventId ids[]) {
+  (void)count;
+  (void)ids;
+  if (stream != [(__bridge App *)context stream])
+    return;
+  [(__bridge App *)context changedPaths:(__bridge NSArray *)paths flags:flags];
+}
+
 @implementation App
+- (BOOL)watch:(NSString *)root {
+  if (_stream) {
+    FSEventStreamStop(_stream);
+    FSEventStreamInvalidate(_stream);
+    FSEventStreamRelease(_stream);
+    _stream = NULL;
+  }
+  self.root = root;
+  self.window.representedFilename =
+      root ? [root stringByAppendingPathComponent:@"config.plist"] : @"";
+  if (!root)
+    return YES;
+  FSEventStreamContext context = {0, (__bridge void *)self, NULL, NULL, NULL};
+  _stream = FSEventStreamCreate(
+      NULL, fileEvents, &context, (__bridge CFArrayRef) @[ root ],
+      kFSEventStreamEventIdSinceNow, 0.25,
+      kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents |
+          kFSEventStreamCreateFlagWatchRoot);
+  if (_stream) {
+    FSEventStreamSetDispatchQueue(_stream, dispatch_get_main_queue());
+    if (FSEventStreamStart(_stream))
+      return YES;
+    FSEventStreamInvalidate(_stream);
+    FSEventStreamRelease(_stream);
+    _stream = NULL;
+  }
+  return NO;
+}
+- (void)changedPaths:(NSArray *)paths
+               flags:(const FSEventStreamEventFlags *)flags {
+  BOOL config = NO, folders = NO;
+  NSString *prefix = [self.root stringByAppendingString:@"/"];
+  for (NSUInteger i = 0; i < paths.count; i++) {
+    if (flags[i] & (kFSEventStreamEventFlagMustScanSubDirs |
+                    kFSEventStreamEventFlagRootChanged)) {
+      folders = config = YES;
+    }
+    NSString *path = paths[i];
+    if (![path hasPrefix:prefix])
+      continue;
+    NSString *first = [[[path substringFromIndex:prefix.length]
+                           pathComponents].firstObject lowercaseString];
+    if ([first isEqual:@"config.plist"])
+      config = YES;
+    if ([@[ @"acpi", @"kexts", @"drivers", @"tools" ] containsObject:first])
+      folders = YES;
+  }
+  if (config || folders)
+    [self.view callAsyncJavaScript:@"window.filesChanged(root, config, folders)"
+                         arguments:@{
+                           @"root" : self.root,
+                           @"config" : @(config),
+                           @"folders" : @(folders)
+                         }
+                           inFrame:nil
+                    inContentWorld:WKContentWorld.pageWorld
+                 completionHandler:nil];
+}
 - (NSString *)it:(NSString *)it en:(NSString *)en {
   return self.english ? en : it;
 }
@@ -41,19 +129,39 @@ extern void oc_free(char *);
   NSArray *actions =
       @[ @"undo:", @"redo:", @"cut:", @"copy:", @"paste:", @"selectAll:" ];
   NSArray *keys = @[ @"z", @"Z", @"x", @"c", @"v", @"a" ];
-  for (NSUInteger i = 0; i < titles.count; i++)
-    [edit.submenu addItemWithTitle:titles[i]
-                            action:NSSelectorFromString(actions[i])
-                     keyEquivalent:keys[i]];
+  for (NSUInteger i = 0; i < titles.count; i++) {
+    NSMenuItem *item =
+        [edit.submenu addItemWithTitle:titles[i]
+                                action:i < 2 ? @selector(editHistory:)
+                                             : NSSelectorFromString(actions[i])
+                         keyEquivalent:keys[i]];
+    if (i < 2) {
+      item.target = self;
+      item.tag = i;
+    }
+  }
   NSApp.mainMenu = menu;
 }
+- (void)editHistory:(NSMenuItem *)item {
+  [self.view
+      callAsyncJavaScript:@"if "
+                          @"(document.activeElement.matches('input,textarea,["
+                          @"contenteditable=true]')) return true; if (st.w) "
+                          @"await work(() => act(op)); return false"
+                arguments:@{@"op" : item.tag ? @"redo" : @"undo"}
+                  inFrame:nil
+           inContentWorld:WKContentWorld.pageWorld
+        completionHandler:^(id native, NSError *error) {
+          if (!error && [native isEqual:@YES])
+            [NSApp sendAction:item.tag ? @selector(redo:) : @selector(undo:)
+                           to:nil
+                         from:item];
+        }];
+}
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
-  NSString *choice =
-      [NSUserDefaults.standardUserDefaults stringForKey:@"InterfaceLanguage"];
-  self.english = choice
-                     ? [choice isEqual:@"en"]
-                     : ![NSLocale.preferredLanguages.firstObject.lowercaseString
-                           hasPrefix:@"it"];
+  self.english = oc_english();
+  self.requests =
+      dispatch_queue_create("io.github.skensy.requests", DISPATCH_QUEUE_SERIAL);
   [self installMenu];
   NSNotificationCenter *center = NSWorkspace.sharedWorkspace.notificationCenter;
   for (NSNotificationName name in @[
@@ -128,25 +236,51 @@ extern void oc_free(char *);
                        completionHandler:(void (^)(BOOL))done {
   done([self confirm:message button:[self it:@"Continua" en:@"Continue"]]);
 }
-- (BOOL)canClose {
-  if (self.working) {
+- (NSApplicationTerminateReply)requestClose:(BOOL)quit {
+  if (self.closing || self.pending || self.editingTask) {
     NSBeep();
-    return NO;
+    return NSTerminateCancel;
   }
-  return !self.dirty ||
-         [self confirm:[self it:@"Scartare le modifiche non salvate?"
-                             en:@"Discard unsaved changes?"]
-                button:[self it:@"Scarta" en:@"Discard"]];
+  if (!self.dirty)
+    return NSTerminateNow;
+  self.closing = YES;
+  NSAlert *alert = [NSAlert new];
+  alert.messageText = [self it:@"Salvare le modifiche al config.plist?"
+                            en:@"Save changes to config.plist?"];
+  [alert addButtonWithTitle:[self it:@"Salva" en:@"Save"]];
+  NSButton *discard = [alert addButtonWithTitle:[self it:@"Scarta"
+                                                      en:@"Discard"]];
+  discard.hasDestructiveAction = YES;
+  [alert addButtonWithTitle:[self it:@"Annulla" en:@"Cancel"]].keyEquivalent =
+      @"\e";
+  NSModalResponse answer = [alert runModal];
+  if (answer != NSAlertFirstButtonReturn) {
+    self.closing = NO;
+    if (answer == NSAlertSecondButtonReturn)
+      self.dirty = NO;
+    return self.dirty ? NSTerminateCancel : NSTerminateNow;
+  }
+  [self.view
+      callAsyncJavaScript:@"await work(() => act('save')); return !st.dirty"
+                arguments:@{}
+                  inFrame:nil
+           inContentWorld:WKContentWorld.pageWorld
+        completionHandler:^(id saved, NSError *error) {
+          self.closing = NO;
+          BOOL ok = !error && [saved isEqual:@YES] && !self.dirty;
+          if (quit)
+            [NSApp replyToApplicationShouldTerminate:ok];
+          else if (ok)
+            [self.window performClose:nil];
+        }];
+  return NSTerminateLater;
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender {
-  if (![self canClose])
-    return NO;
-  self.dirty = NO;
-  return YES;
+  return [self requestClose:NO] == NSTerminateNow;
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:
     (NSApplication *)sender {
-  return [self canClose] ? NSTerminateNow : NSTerminateCancel;
+  return [self requestClose:YES];
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:
     (NSApplication *)sender {
@@ -174,14 +308,29 @@ extern void oc_free(char *);
     reply(@{@"ok" : self.english ? @"en" : @"it"}, nil);
     return;
   }
-  if ([op isEqual:@"dirty"]) {
-    self.dirty = [req[@"value"] boolValue];
+  if ([op isEqual:@"editingTask"]) {
+    self.editingTask = [req[@"value"] boolValue];
     reply(@{}, nil);
     return;
   }
-  if (self.working) {
-    reply(nil, [self it:@"Operazione in corso" en:@"Operation in progress"]);
+  if ([op isEqual:@"dirty"]) {
+    self.dirty = [req[@"value"] boolValue];
+    self.window.documentEdited = self.dirty;
+    reply(@{}, nil);
     return;
+  }
+  if ([op isEqual:@"sample"])
+    [req removeObjectForKey:@"path"];
+  if ([op isEqual:@"sample"] && [req[@"choose"] boolValue]) {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.title = [self it:@"Seleziona Sample.plist" en:@"Choose Sample.plist"];
+    panel.allowedContentTypes = @[ UTTypePropertyList ];
+    panel.canChooseDirectories = NO;
+    if ([panel runModal] != NSModalResponseOK) {
+      reply(@{@"cancelled" : @YES}, nil);
+      return;
+    }
+    req[@"path"] = panel.URL.path;
   }
   if ([op isEqual:@"export"]) {
     NSSavePanel *panel = [NSSavePanel savePanel];
@@ -219,8 +368,8 @@ extern void oc_free(char *);
                                                    error:nil];
   NSString *json = [[NSString alloc] initWithData:data
                                          encoding:NSUTF8StringEncoding];
-  self.working = YES;
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+  self.pending++;
+  dispatch_async(self.requests, ^{
     char *raw = oc_request(json.UTF8String);
     NSData *response = [NSData dataWithBytes:raw length:strlen(raw)];
     oc_free(raw);
@@ -228,7 +377,15 @@ extern void oc_free(char *);
                                                            options:0
                                                              error:nil];
     dispatch_async(dispatch_get_main_queue(), ^{
-      self.working = NO;
+      self.pending--;
+      if (result[@"ok"] && [op isEqual:@"open"]) {
+        NSMutableDictionary *opened = [result[@"ok"] mutableCopy];
+        opened[@"watching"] = @([self watch:opened[@"root"]]);
+        reply(@{@"ok" : opened}, nil);
+        return;
+      }
+      if (result[@"ok"] && ([op isEqual:@"close"] || [op isEqual:@"finish"]))
+        [self watch:nil];
       if (result)
         reply(result, nil);
       else

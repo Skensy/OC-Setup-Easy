@@ -23,17 +23,19 @@ fn read(program: &str, args: &[&str]) -> String {
         .map(|x| String::from_utf8_lossy(&x).trim().to_owned())
         .unwrap_or_default()
 }
-fn profiler_types() -> Vec<String> {
-    read("/usr/sbin/system_profiler", &["-listDataTypes"])
-        .lines()
-        .map(str::trim)
-        .filter(|name| {
-            name.starts_with("SP")
-                && name.ends_with("DataType")
-                && name.bytes().all(|b| b.is_ascii_alphanumeric())
-        })
-        .map(String::from)
-        .collect()
+fn profiler_types() -> Result<Vec<String>> {
+    Ok(
+        String::from_utf8(output("/usr/sbin/system_profiler", &["-listDataTypes"])?)?
+            .lines()
+            .map(str::trim)
+            .filter(|name| {
+                name.starts_with("SP")
+                    && name.ends_with("DataType")
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+            .map(String::from)
+            .collect(),
+    )
 }
 pub fn overview() -> Value {
     let sys = |key: &str| read("/usr/sbin/sysctl", &["-n", key]);
@@ -45,9 +47,9 @@ pub fn overview() -> Value {
         "kernel":read("/usr/bin/uname",&["-r"]), "arch":read("/usr/bin/uname",&["-m"]),
         "cpu":sys("machdep.cpu.brand_string"),"ram":sys("hw.memsize").parse::<u64>().ok().map(|v|v/(1<<30)),
         "cores":sys("hw.physicalcpu"),"threads":sys("hw.logicalcpu"),"model":sys("hw.model"),
-        "reports":profiler_types(), "boot":sys("kern.bootargs"),"oc":oc.split_once('\t').map(|v|v.1).unwrap_or("")})
+        "boot":sys("kern.bootargs"),"oc":oc.split_once('\t').map(|v|v.1).unwrap_or("")})
 }
-pub fn report(category: &str) -> Result<Value> {
+fn report(category: &str) -> Result<Value> {
     let data = match category {
         "graphics" | "pci" | "usb" | "storage" | "audio" | "network" | "memory" => {
             let name = match category {
@@ -61,14 +63,67 @@ pub fn report(category: &str) -> Result<Value> {
             };
             output("/usr/sbin/system_profiler", &[name, "-timeout", "20"])?
         }
+        "pciDevices" => {
+            return Ok(json!(crate::devices::pci(&P::from_reader(Cursor::new(
+                output("/usr/sbin/ioreg", &["-a", "-l", "-p", "IODeviceTree"])?
+            ))?)));
+        }
+        "categories" => return Ok(json!(profiler_types()?)),
+        "ioreg" => output("/usr/sbin/ioreg", &["-p", "IOService", "-w", "0"])?,
         "loaded" => output("/usr/bin/kmutil", &["showloaded", "--list-only"])?,
         "power" => output("/usr/bin/pmset", &["-g", "custom"])?,
-        name if profiler_types().iter().any(|s| s == name) => {
+        name if name.starts_with("SP")
+            && name.ends_with("DataType")
+            && name.len() < 100
+            && name.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+        {
             output("/usr/sbin/system_profiler", &[name, "-timeout", "30"])?
         }
         _ => bail!("Categoria sconosciuta"),
     };
     Ok(json!(String::from_utf8_lossy(&data).trim()))
+}
+
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+};
+static REPORTS: LazyLock<Mutex<HashMap<String, Value>>> = LazyLock::new(Default::default);
+
+pub fn cached_report(category: &str, refresh: bool) -> Result<Value> {
+    let mut cache = REPORTS.lock().unwrap();
+    if let Some(state) = cache.get(category)
+        && (!refresh || state["state"] == "loading")
+    {
+        return Ok(state.clone());
+    }
+    let key = category.to_owned();
+    std::thread::Builder::new()
+        .name("hardware-report".into())
+        .spawn(move || {
+            let state = match report(&key) {
+                Ok(value) => json!({"state":"ready","value":value}),
+                Err(e) => json!({"state":"error","detail":e.to_string()}),
+            };
+            REPORTS.lock().unwrap().insert(key, state);
+        })?;
+    let loading = json!({"state":"loading"});
+    cache.insert(category.into(), loading.clone());
+    Ok(loading)
+}
+
+#[test]
+fn background_reports_cache_failures_and_retry() {
+    let key = "unknown-test";
+    assert_eq!(cached_report(key, false).unwrap()["state"], "loading");
+    for _ in 0..100 {
+        if cached_report(key, false).unwrap()["state"] == "error" {
+            assert_eq!(cached_report(key, true).unwrap()["state"], "loading");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("report worker did not finish");
 }
 
 pub fn disks() -> Result<Value> {

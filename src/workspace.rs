@@ -20,11 +20,15 @@ const CONFIG: &str = "config.plist";
 pub struct Workspace {
     pub root: PathBuf,
     pub update: Option<crate::maintenance::Plan>,
+    pub sample: Option<P>,
+    pub kext_updates: Vec<crate::kext_update::Candidate>,
+    pub usb_fix: Option<crate::usb::Fix>,
+    pub history: crate::history::History,
     baseline: Vec<u8>,
     device: u64,
     inode: u64,
 }
-fn xml(bytes: &[u8]) -> Result<String> {
+pub(crate) fn xml(bytes: &[u8]) -> Result<String> {
     let parsed = P::from_reader(Cursor::new(bytes)).context("Plist non leggibile")?;
     ensure!(
         parsed.as_dictionary().is_some(),
@@ -67,11 +71,15 @@ impl Workspace {
             "config.plist è un collegamento simbolico"
         );
         let baseline = fs::read(config)?;
-        xml(&baseline)?;
+        let history = crate::history::History::new(xml(&baseline)?);
         let meta = root.metadata()?;
         Ok(Self {
             root,
             update: None,
+            sample: None,
+            kext_updates: Vec::new(),
+            usb_fix: None,
+            history,
             baseline,
             device: meta.dev(),
             inode: meta.ino(),
@@ -150,6 +158,9 @@ impl Workspace {
     }
     pub fn inventory(&self) -> Result<Value> {
         self.check()?;
+        Self::inventory_at(&self.root)
+    }
+    pub(crate) fn inventory_at(root: &Path) -> Result<Value> {
         let mut result = json!({});
         for (folder, extensions) in [
             ("Kexts", &["kext"][..]),
@@ -157,7 +168,7 @@ impl Workspace {
             ("Drivers", &["efi"][..]),
             ("Tools", &["efi"][..]),
         ] {
-            let base = self.root.join(folder);
+            let base = root.join(folder);
             let mut items = Vec::new();
             if base.exists() {
                 ensure!(
@@ -207,7 +218,7 @@ impl Workspace {
                             .join(&executable)
                             .canonicalize()
                             .is_ok_and(|p| p.starts_with(&path) && p.is_file()));
-                out.push(json!({"path":rel,"id":get("CFBundleIdentifier"),"version":get("CFBundleVersion"),"executable":executable,"valid":valid,
+                out.push(json!({"path":rel,"id":get("CFBundleIdentifier"),"usbModels":meta.as_ref().map(|p|crate::usb::models(p,rel)), "shortVersion":get("CFBundleShortVersionString"),"version":get("CFBundleVersion"),"executable":executable,"valid":valid,
                     "dependencies":meta.as_ref().and_then(P::as_dictionary).and_then(|d|d.get("OSBundleLibraries")).and_then(P::as_dictionary).map(|d|d.keys().collect::<Vec<_>>())}));
                 let plugins = path.join("Contents/PlugIns");
                 if plugins.is_dir() && plugins.canonicalize()? == plugins {
@@ -264,15 +275,7 @@ impl Workspace {
             !copied.is_empty() && copied.iter().all(|k| k["valid"] == true),
             "Metadati o eseguibile mancanti nel bundle copiato"
         );
-        // macOS renamex_np with RENAME_EXCL publishes the copy without replacing a concurrent import.
-        unsafe extern "C" {
-            fn renamex_np(a: *const i8, b: *const i8, flags: u32) -> i32;
-        }
-        let a = CString::new(staged.as_os_str().as_bytes())?;
-        let b = CString::new(dest.as_os_str().as_bytes())?;
-        if unsafe { renamex_np(a.as_ptr(), b.as_ptr(), 4) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        rename_exclusive(&staged, &dest)?;
         self.inventory()
     }
     pub fn backup(&self) -> Result<PathBuf> {
@@ -305,13 +308,22 @@ impl Workspace {
         Ok(zip.keep()?.1)
     }
 }
+pub(crate) fn rename_exclusive(source: &Path, dest: &Path) -> Result<()> {
+    // macOS renamex_np with RENAME_EXCL publishes the copy without replacing a concurrent import.
+    unsafe extern "C" {
+        fn renamex_np(a: *const i8, b: *const i8, flags: u32) -> i32;
+    }
+    let a = CString::new(source.as_os_str().as_bytes())?;
+    let b = CString::new(dest.as_os_str().as_bytes())?;
+    if unsafe { renamex_np(a.as_ptr(), b.as_ptr(), 4) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
 pub fn validate(text: &str) -> Result<Value> {
     let mut file = NamedTempFile::new()?;
     file.write_all(text.as_bytes())?;
-    let bin = std::env::current_exe()?
-        .parent()
-        .context("Bundle non disponibile")?
-        .join("../Resources/ocvalidate");
+    let bin = crate::plist_tools::resource("ocvalidate")?;
     if !bin.is_file() {
         bail!("ocvalidate assente nel bundle");
     }
@@ -369,4 +381,20 @@ mod tests {
         assert!(w.import(&bundle).is_err());
         Ok(())
     }
+}
+
+#[test]
+fn failed_close_save_preserves_draft_history_and_external_file() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let cfg = tmp.path().join(CONFIG);
+    fs::write(&cfg, "<plist><dict/></plist>")?;
+    let mut w = Workspace::open(tmp.path())?;
+    let edited = "<plist><dict><key>x</key><true/></dict></plist>";
+    w.history.record(edited);
+    fs::write(&cfg, "external")?;
+    assert!(w.save_in(edited, tmp.path()).is_err());
+    assert_eq!(w.history.step(false)["xml"], "<plist><dict/></plist>");
+    assert_eq!(w.history.step(true)["xml"], edited);
+    assert_eq!(fs::read(&cfg)?, b"external");
+    Ok(())
 }

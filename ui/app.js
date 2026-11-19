@@ -56,7 +56,9 @@ const st = {
   section: "",
   group: "Kexts",
   validation: null,
-  report: "",
+  reports: {},
+  history: {},
+  changed: {},
   category: "graphics",
   busy: false,
 };
@@ -112,6 +114,7 @@ window.addEventListener("ocVolumesChanged", () => {
 async function work(fn) {
   if (st.busy) return;
   st.busy = true;
+  bridge("editingTask", { value: true });
   $("main").inert = true;
   $("aside").inert = true;
   document.body.classList.add("wait");
@@ -131,11 +134,82 @@ async function work(fn) {
     } catch (e) {
       notice(e.message, true);
     }
+    await bridge("editingTask", { value: false });
     st.busy = false;
     $("main").inert = false;
     $("aside").inert = false;
     document.body.classList.remove("wait");
     $("#busy").hidden = true;
+  }
+}
+function historyButtons() {
+  for (const op of ["undo", "redo"]) {
+    const b = document.querySelector('[data-act="' + op + '"]');
+    if (b) b.disabled = !st.history[op];
+  }
+}
+function checkpoint() {
+  const w = st.w;
+  rpc("checkpoint", { xml: st.xml })
+    .then((h) => {
+      if (w === st.w) {
+        st.history = h;
+        historyButtons();
+      }
+    })
+    .catch((e) => notice(e.message, true));
+  dirty();
+}
+function watchBanner() {
+  const el = $("#watched");
+  el.hidden = !st.w || !(st.changed.config || st.changed.folders);
+  el.innerHTML = [
+    st.changed.config &&
+      t("config.plist è cambiato sul disco.") +
+        " " +
+        btn(t("Ricarica"), "reload"),
+    st.changed.folders &&
+      t("Le cartelle EFI sono cambiate.") +
+        " " +
+        btn(t("Sincronizza cartelle EFI"), "watchSync"),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+window.filesChanged = async (root, config, folders) => {
+  const w = st.w;
+  if (w?.root !== root) return;
+  if (folders) st.changed.folders = true;
+  if (config) {
+    const changed = await rpc("diskChanged");
+    if (st.w !== w) return;
+    st.changed.config = changed;
+  }
+  watchBanner();
+};
+const pendingReports = new Set();
+async function loadReport(category, refresh = false) {
+  if (pendingReports.has(category) || (!refresh && st.reports[category]))
+    return;
+  pendingReports.add(category);
+  try {
+    let state;
+    do {
+      state = await rpc("report", { category, refresh });
+      refresh = false;
+      st.reports[category] = state;
+      if (category === "pciDevices") fillPci();
+      if (category === "categories" && state.state === "ready")
+        st.system.reports = state.value;
+      if (st.page === "system") draw();
+      if (state.state === "loading")
+        await new Promise((resolve) => setTimeout(resolve, 400));
+    } while (state.state === "loading");
+  } catch (e) {
+    st.reports[category] = { state: "error", detail: e.message };
+    if (st.page === "system") draw();
+  } finally {
+    pendingReports.delete(category);
   }
 }
 function dirty() {
@@ -188,7 +262,7 @@ const get = (d, k) => entries(d).find(([key]) => key === k)?.[1];
 const root = () => st.doc.documentElement.firstElementChild;
 function sync() {
   st.xml = new XMLSerializer().serializeToString(st.doc);
-  dirty();
+  checkpoint();
 }
 function typed(doc, value) {
   const n = doc.createElement(
@@ -202,6 +276,7 @@ function discard() {
 }
 function openData(data) {
   let doc = null;
+  if (!data.watching) notice(t("Monitoraggio cartella non disponibile."), true);
   try {
     doc = parse(data.xml);
   } catch (err) {
@@ -210,6 +285,8 @@ function openData(data) {
   Object.assign(st, {
     logs: null,
     w: data,
+    history: {},
+    changed: {},
     xml: data.xml,
     original: data.xml,
     doc,
@@ -242,7 +319,12 @@ function draw() {
     .join("");
   $("#crumb").textContent = "Workbench   /   " + t(pages[page][0]);
   volumeStatus();
-  if (page === "home") return home();
+  watchBanner();
+  if (page === "home") {
+    home();
+    quickBoot();
+    return;
+  }
   let head =
     '<div class="heading"><div><div class="label">Workbench</div><h1>' +
     t(pages[page][0]) +
@@ -293,6 +375,7 @@ function draw() {
       }
     }
   }
+  historyButtons();
   const save = $("[data-act=save]");
   if (save) save.disabled = !st.dirty;
 }
@@ -400,6 +483,7 @@ function disks() {
   );
 }
 const categories = {
+  ioreg: "IORegistry",
   graphics: "Grafica e monitor",
   pci: "Dispositivi PCI",
   audio: "Audio",
@@ -411,6 +495,15 @@ const categories = {
   power: "Energia",
 };
 function systemPanel(s) {
+  loadReport("categories");
+  loadReport(st.category);
+  const report = st.reports[st.category];
+  const status =
+    !report || report.state === "loading"
+      ? t("Caricamento…")
+      : report.state === "error"
+        ? t("Errore report") + " · " + translatedError(report.detail)
+        : t("Report pronto");
   return (
     '<div class="card"><h2>' +
     t("Hardware e avvio") +
@@ -453,9 +546,12 @@ function systemPanel(s) {
       )
       .join("") +
     "</optgroup></select>" +
-    btn(t("Leggi report"), "report", "", "terminal") +
+    btn(t("Aggiorna report"), "report", "", "terminal") +
     "</div>" +
-    (st.report ? codeText(st.report) : "") +
+    (esc(status) +
+      (report?.state === "ready"
+        ? codeText(report.value || t("Nessun dato restituito da macOS."))
+        : "")) +
     '<section class="card"><h2>' +
     t("Log di avvio e kernel panic") +
     "</h2>" +
@@ -480,6 +576,8 @@ function config() {
     '<div class="actions">' +
     btn(t("Campi"), "fields") +
     btn("XML", "xml") +
+    btn(language === "en" ? "Undo" : "Annulla", "undo") +
+    btn(t("Ripeti"), "redo") +
     btn(t("Verifica"), "verify", "", "shield") +
     btn(t("Mostra modifiche"), "diff") +
     btn(t("Salva plist"), "save", "primary", "save") +
@@ -564,6 +662,8 @@ function buildTree() {
       row.append(name, input);
       parent.append(row);
       markField(input, path);
+      if (path.join("/") === bootPath.join("/") && type === "string")
+        row.after(bootControls(n, input));
       if (["MinKernel", "MaxKernel"].includes(label) && type === "string") {
         row.after(
           kernelSelect(label, n.textContent, (v) => {
@@ -582,6 +682,8 @@ function buildTree() {
       btn(t("Genera seriale, MLB e UUID"), "generate");
     tree.append(actions);
   }
+  if (st.section === "DeviceProperties" && get(node, "Add")?.tagName === "dict")
+    pciPanel(tree, get(node, "Add"));
   append(tree, st.section, node, 0, [st.section]);
   st.focusPath = null;
 }
@@ -814,6 +916,11 @@ function validation() {
         "Crea uno ZIP della cartella EFI su disco, oppure della sola OC se aperta separatamente.",
       ) +
       "</p>") +
+    btn(t("Controlla aggiornamenti kext"), "checkKexts") +
+    btn(t("Confronta con Sample.plist"), "sampleFile") +
+    (st.w.releaseSample
+      ? btn(t("Confronta con il Sample.plist della release"), "sampleRelease")
+      : "") +
     btn(t("Controlla aggiornamenti OpenCore"), "checkUpdate") +
     btn(t("Esporta config anonimizzato"), "export") +
     btn(t("Crea backup ZIP"), "backup", "", "box") +
@@ -833,6 +940,30 @@ function validation() {
 }
 async function act(a) {
   notice("");
+  if (["addPci", "applyProperty", "refreshPci"].includes(a))
+    return editProperty(a);
+  if (a.startsWith("usbFix-")) {
+    const bundle = st.validation.issues[Number(a.slice(7))].details[0];
+    const plan = await rpc("usbPreview", { bundle, xml: st.xml });
+    if (
+      await preview(
+        "Allinea SMBIOS nel kext",
+        bundle +
+          "\n" +
+          plan.changes
+            .map(([key, v]) => key + " · " + v + " → " + plan.model)
+            .join("\n"),
+        "Allinea SMBIOS nel kext",
+      )
+    ) {
+      const backup = await rpc("usbApply");
+      st.w.inventory = await rpc("inventory");
+      st.validation = await rpc("validate", { xml: st.xml });
+      draw();
+      notice(t("Copia precedente in ") + backup);
+    }
+    return;
+  }
   if (a.startsWith("jump-")) {
     const target = st.links[Number(a.slice(5))];
     st.doc = parse(st.xml);
@@ -867,6 +998,30 @@ async function act(a) {
     }
   } else
     switch (a) {
+      case "watchSync":
+        st.changed.folders = false;
+        await snapshot(true);
+        break;
+      case "reload":
+        if (discard()) openData(await rpc("open", { volume: st.w.root }));
+        break;
+      case "undo":
+      case "redo": {
+        const h = await rpc(a);
+        st.xml = h.xml;
+        try {
+          st.doc = parse(st.xml);
+        } catch {
+          st.doc = null;
+        }
+        if (!h.fields || !st.doc) {
+          st.mode = "xml";
+          st.page = "config";
+        }
+        st.history = h;
+        dirty();
+        break;
+      }
       case "open": {
         if (!discard()) return;
         const w = await rpc("open");
@@ -891,9 +1046,8 @@ async function act(a) {
         st.disks = await rpc("disks");
         break;
       case "report":
-        st.report =
-          (await rpc("report", { category: st.category })) ||
-          t("Nessun dato restituito da macOS.");
+        loadReport(st.category, true);
+        loadReport("categories", true);
         break;
       case "fields":
         st.doc = parse(st.xml);
@@ -906,8 +1060,84 @@ async function act(a) {
         st.logs = await rpc("logs");
         if (!st.logs.length) notice(t("Nessun log disponibile"));
         break;
+      case "sampleFile":
+      case "sampleRelease": {
+        const rows = await rpc("sample", {
+          xml: st.xml,
+          choose: a === "sampleFile",
+        });
+        if (rows)
+          await preview(
+            "Confronta con Sample.plist",
+            rows
+              .map(
+                (r) =>
+                  (r.kind === "missing"
+                    ? t("Assente nella bozza")
+                    : t("Solo nella bozza")) +
+                  " · " +
+                  r.path +
+                  (r.default !== undefined
+                    ? " · " + t("Valore del Sample") + " " + r.default
+                    : ""),
+              )
+              .join("\n") || t("Nessuna modifica"),
+          );
+        break;
+      }
+      case "checkKexts": {
+        const rows = await rpc("checkKexts");
+        const list = document.createElement("div");
+        const boxes = [];
+        for (const r of rows) {
+          const label = document.createElement("label");
+          const check = document.createElement("input");
+          check.type = "checkbox";
+          check.value = r.index;
+          check.disabled = r.index == null;
+          if (!check.disabled) boxes.push(check);
+          label.append(
+            check,
+            document.createTextNode(
+              r.name +
+                " · " +
+                (r.installed || "—") +
+                " → " +
+                (r.latest || "—") +
+                (r.error ? " · " + translatedError(r.error) : ""),
+            ),
+          );
+          list.append(label, document.createElement("br"));
+        }
+        if (!rows.length)
+          list.textContent = t("Nessun kext supportato nella EFI");
+        const hint = document.createElement("p");
+        hint.textContent = t(
+          "Prima della sostituzione verrà creato e verificato un backup ZIP completo della EFI.",
+        );
+        if (boxes.length) list.append(hint);
+        if (
+          await preview(
+            "Controlla aggiornamenti kext",
+            list,
+            boxes.length ? "Aggiorna selezionati" : null,
+          )
+        ) {
+          const selected = boxes
+            .filter((b) => b.checked)
+            .map((b) => Number(b.value));
+          if (selected.length) {
+            const path = await rpc("applyKexts", { selected });
+            st.w.inventory = await rpc("inventory");
+            st.validation = null;
+            notice(t("Backup ZIP creato in ") + path);
+          }
+        }
+        break;
+      }
       case "checkUpdate": {
         const update = await rpc("checkUpdate");
+        st.w.releaseSample = true;
         const text = [
           "OpenCore " + update.version,
           "SHA-256 · " + update.digest,
@@ -1022,8 +1252,9 @@ async function act(a) {
             ))
         )
           return;
-        const doc = parse(st.xml);
-        const check = await rpc("validate", { xml: st.xml });
+        const xml = st.xml;
+        const doc = parse(xml);
+        const check = await rpc("validate", { xml });
         if (!check.pass) {
           st.validation = check;
           st.page = "validate";
@@ -1037,13 +1268,17 @@ async function act(a) {
           )
             return;
         }
-        const backup = st.dirty ? await rpc("save", { xml: st.xml }) : null;
-        st.doc = doc;
-        st.original = st.xml;
+        if (st.xml !== xml)
+          throw Error(t("La bozza è cambiata durante il salvataggio."));
+        const backup = st.dirty ? await rpc("save", { xml }) : null;
+        if (st.xml === xml) st.doc = doc;
+        st.original = xml;
         dirty();
         if (backup)
           notice(t("Configurazione salvata. Copia precedente in ") + backup);
         if (disk) {
+          if (st.dirty)
+            throw Error(t("La bozza è cambiata durante il salvataggio."));
           const result = await rpc("finish", { id: disk.id, uuid: disk.uuid });
           st.disks = result.disks;
           Object.assign(st, {
@@ -1081,10 +1316,17 @@ document.addEventListener("click", (e) => {
   } else if (b.dataset.act || b.id === "open")
     work(() => act(b.dataset.act || "open"));
 });
+document.addEventListener(
+  "beforeinput",
+  (e) => {
+    if (st.busy && e.target.closest("main, aside")) e.preventDefault();
+  },
+  true,
+);
 document.addEventListener("input", (e) => {
   if (e.target.id === "xml") {
     st.xml = e.target.value;
-    dirty();
+    checkpoint();
   }
 });
 document.addEventListener("change", (e) => {
@@ -1099,11 +1341,20 @@ document.addEventListener("change", (e) => {
   }
   if (e.target.id === "category") {
     st.category = e.target.value;
-    st.report = "";
     draw();
   }
 });
 document.addEventListener("keydown", (e) => {
+  if (
+    e.metaKey &&
+    e.key.toLowerCase() === "z" &&
+    st.w &&
+    !e.target.closest("input,textarea,[contenteditable=true]")
+  ) {
+    e.preventDefault();
+    work(() => act(e.shiftKey ? "redo" : "undo"));
+    return;
+  }
   if (e.metaKey && e.key.toLowerCase() === "s") {
     e.preventDefault();
     if (st.w && st.dirty) work(() => act("save"));

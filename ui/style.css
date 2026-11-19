@@ -586,3 +586,10 @@ header {
 header #open {
   flex-shrink: 0;
 }
+
+#watched {
+  padding: 0.65rem 1rem;
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+  margin-bottom: 0.75rem;
+}

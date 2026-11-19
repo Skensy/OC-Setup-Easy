@@ -125,7 +125,7 @@ fn x64(bytes: &[u8]) -> bool {
     let n = u32::from_le_bytes(offset.try_into().unwrap()) as usize;
     bytes.get(n..n + 6) == Some(b"PE\0\0\x64\x86")
 }
-fn efi(w: &Workspace) -> Result<&Path> {
+pub(crate) fn efi(w: &Workspace) -> Result<&Path> {
     w.check()?;
     w.root
         .parent()
@@ -199,16 +199,20 @@ const CURL: &[&str] = &[
     "--max-time",
     "120",
 ];
+pub(crate) fn release(repo: &str) -> Result<Value> {
+    let url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let mut args = CURL.to_vec();
+    args.extend(["--max-filesize", "1048576", &url]);
+    Ok(serde_json::from_slice(&system::output(
+        "/usr/bin/curl",
+        &args,
+    )?)?)
+}
 pub fn check_update(w: &mut Workspace) -> Result<Value> {
     w.update = None;
+    w.sample = None;
     efi(w)?;
-    let mut args = CURL.to_vec();
-    args.extend([
-        "--max-filesize",
-        "1048576",
-        "https://api.github.com/repos/acidanthera/OpenCorePkg/releases/latest",
-    ]);
-    let release: Value = serde_json::from_slice(&system::output("/usr/bin/curl", &args)?)?;
+    let release = release("acidanthera/OpenCorePkg")?;
     let tag = release["tag_name"]
         .as_str()
         .context("Missing release version")?;
@@ -226,24 +230,37 @@ pub fn check_update(w: &mut Workspace) -> Result<Value> {
         .and_then(|s| s.strip_prefix("sha256:"))
         .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .context("Missing release SHA-256")?;
-    let archive = NamedTempFile::new()?;
-    let file = archive.path().to_str().context("Invalid archive path")?;
     let url = format!("https://github.com/acidanthera/OpenCorePkg/releases/download/{tag}/{name}");
-    let mut args = CURL.to_vec();
-    args.extend(["--max-filesize", "134217728", "--output", file, &url]);
-    system::output("/usr/bin/curl", &args)?;
-    let actual = String::from_utf8(system::output("/usr/bin/shasum", &["-a", "256", file])?)?;
-    ensure!(
-        actual.split_whitespace().next() == Some(digest),
-        "SHA-256 mismatch"
-    );
+    let archive = download(&url, digest)?;
+    let sample = system::output(
+        "/usr/bin/unzip",
+        &[
+            "-p",
+            archive.path().to_str().context("Invalid archive path")?,
+            "Docs/Sample.plist",
+        ],
+    )?;
+    w.sample = Some(plist::Value::from_reader(std::io::Cursor::new(sample))?);
     let plan = plan_archive(w, archive.path())?;
     let root = efi(w)?;
     let summary = json!({"version":tag,"digest":digest,"paths":plan.changes.iter().map(|c|c.path.strip_prefix(root).unwrap()).collect::<Vec<_>>()});
     w.update = Some(plan);
     Ok(summary)
 }
-fn replace(path: &Path, expected: &[u8], data: &[u8]) -> Result<()> {
+pub(crate) fn download(url: &str, digest: &str) -> Result<NamedTempFile> {
+    let archive = NamedTempFile::new()?;
+    let file = archive.path().to_str().context("Invalid archive path")?;
+    let mut args = CURL.to_vec();
+    args.extend(["--max-filesize", "134217728", "--output", file, url]);
+    system::output("/usr/bin/curl", &args)?;
+    let actual = String::from_utf8(system::output("/usr/bin/shasum", &["-a", "256", file])?)?;
+    ensure!(
+        actual.split_whitespace().next() == Some(digest),
+        "SHA-256 mismatch"
+    );
+    Ok(archive)
+}
+pub(crate) fn replace(path: &Path, expected: &[u8], data: &[u8]) -> Result<()> {
     ensure!(
         path.canonicalize()? == path && fs::read(path)? == expected,
         "Binary changed since preview: {}",
@@ -261,6 +278,16 @@ fn replace(path: &Path, expected: &[u8], data: &[u8]) -> Result<()> {
     tmp.persist(path)?;
     Ok(())
 }
+pub(crate) fn write_lock(dir: &Path) -> Result<File> {
+    let lock = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".save.lock"))?;
+    lock.try_lock_exclusive()
+        .context("Another write is in progress")?;
+    Ok(lock)
+}
 pub fn apply_update(w: &mut Workspace) -> Result<Value> {
     efi(w)?;
     let plan = w
@@ -268,13 +295,7 @@ pub fn apply_update(w: &mut Workspace) -> Result<Value> {
         .take()
         .context("Check the release again before applying")?;
     ensure!(!plan.changes.is_empty(), "No binary changes");
-    let lock = File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(crate::workspace::backups()?.join(".save.lock"))?;
-    lock.try_lock_exclusive()
-        .context("Another write is in progress")?;
+    let _lock = write_lock(&crate::workspace::backups()?)?;
     for c in &plan.changes {
         ensure!(
             c.path.canonicalize()? == c.path && fs::read(&c.path)? == c.before,

@@ -1,8 +1,14 @@
+mod cli;
+mod devices;
 mod diagnostics;
 mod graph;
+mod history;
+mod kext_update;
 mod maintenance;
 mod plist_tools;
+mod schema;
 mod system;
+mod usb;
 mod workspace;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -32,7 +38,7 @@ fn dispatch(req: &Value) -> Result<Value> {
         "logs" => maintenance::logs(session.as_ref()),
         "system" => Ok(system::overview()),
         "disks" => system::disks(),
-        "report" => system::report(field("category")?),
+        "report" => system::cached_report(field("category")?, req["refresh"] == true),
         "mount" | "unmount" => {
             let id = field("id")?;
             if field("op")? == "unmount" {
@@ -105,6 +111,41 @@ fn dispatch(req: &Value) -> Result<Value> {
                 .as_mut()
                 .context("Apri prima una cartella OpenCore.")?;
             match op {
+                "convert" => devices::convert(field("kind")?, field("value")?),
+                "usbPreview" => {
+                    w.usb_fix = None;
+                    let (fix, summary) = usb::Fix::preview(w, field("bundle")?, field("xml")?)?;
+                    w.usb_fix = Some(fix);
+                    Ok(summary)
+                }
+                "usbApply" => Ok(json!(
+                    w.usb_fix
+                        .take()
+                        .context("Ricontrolla la mappa USB")?
+                        .apply(w, &workspace::backups()?)?
+                )),
+                "checkpoint" => Ok(w.history.record(field("xml")?)),
+                "undo" | "redo" => Ok(w.history.step(op == "redo")),
+                "diskChanged" => Ok(json!(w.assert_unchanged().is_err())),
+                "checkKexts" => kext_update::check(w),
+                "applyKexts" => {
+                    kext_update::apply(w, serde_json::from_value(req["selected"].clone())?)
+                }
+                "sample" => {
+                    let picked = req["path"]
+                        .as_str()
+                        .map(plist::Value::from_file)
+                        .transpose()?;
+                    let sample = picked
+                        .as_ref()
+                        .or(w.sample.as_ref())
+                        .context("Seleziona Sample.plist")?;
+                    ensure!(sample.as_dictionary().is_some(), "Radice plist non valida");
+                    Ok(schema::compare(
+                        sample,
+                        &plist::Value::from_reader_xml(field("xml")?.as_bytes())?,
+                    ))
+                }
                 "checkUpdate" => maintenance::check_update(w),
                 "applyUpdate" => maintenance::apply_update(w),
                 "diff" => plist_tools::diff(&w.disk_xml()?, field("xml")?),
@@ -173,6 +214,21 @@ unsafe extern "C" fn oc_free(ptr: *mut c_char) {
     drop(unsafe { CString::from_raw(ptr) });
 }
 
-fn main() {
-    unsafe { run_window() }
+fn main() -> std::process::ExitCode {
+    match cli::parse(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        Ok(cli::Action::Gui) => {
+            unsafe { run_window() };
+            std::process::ExitCode::SUCCESS
+        }
+        action => {
+            let code = match action.and_then(cli::run) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("{}", cli::translate(&format!("{e:#}")));
+                    1
+                }
+            };
+            std::process::ExitCode::from(code)
+        }
+    }
 }
