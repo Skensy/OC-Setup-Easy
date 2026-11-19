@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>OC Setup Easy</title>
+    <link rel="stylesheet" href="style.css" />
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <aside>
+      <div class="brand">
+        <span class="mark" data-icon="layers"></span>
+        <div>
+          <strong>OC Setup Easy</strong><small>OpenCore Workbench</small>
+        </div>
+      </div>
+      <nav id="nav" aria-label="Navigazione principale"></nav>
+      <div class="sidefoot">
+        <span class="led"></span> Sessione locale <small>v0.1</small>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <span id="crumb"></span
+        ><button id="open" class="primary">
+          <i data-icon="folder"></i>Apri cartella EFI
+        </button>
+      </header>
+      <div id="notice" role="status" hidden></div>
+      <section id="content"></section>
+    </main>
+    <div id="busy" hidden role="status">Operazione in corso…</div>
+  </body>
+</html>

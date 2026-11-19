@@ -1,0 +1,20 @@
+[package]
+name = "oc-setup-easy"
+version = "0.1.0"
+edition = "2024"
+description = "A local OpenCore workbench for macOS"
+
+[dependencies]
+anyhow = "1"
+plist = "1"
+serde_json = "1"
+tempfile = "3"
+fs2 = "0.4"
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
